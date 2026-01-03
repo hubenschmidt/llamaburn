@@ -2,10 +2,8 @@
 
 A multi-agent chat system with a Svelte 5 frontend and Rust backend featuring real-time streaming, LLM observability, and modular worker architecture.
 
-## Features
-
 - **Real-time streaming** — Responses stream token-by-token as they're generated
-- **Multi-agent pipeline** — Frontline → Orchestrator → Workers → Evaluator
+- **Multi-agent pipeline** — Frontline, Orchestrator, Workers, Evaluator
 - **LLM observability** — Token usage and response time displayed per message
 - **Modular workers** — Search (Serper), Email (SendGrid), General conversation
 - **Evaluator loop** — Optional quality validation with retry logic
@@ -33,13 +31,6 @@ A multi-agent chat system with a Svelte 5 frontend and Rust backend featuring re
                                        └─────────────────────────────────────┘
 ```
 
-**Agent Crates:**
-- `agents-core` — Shared types, errors, and traits
-- `agents-llm` — OpenAI client with streaming support
-- `agents-pipeline` — Frontline, Orchestrator, Evaluator agents
-- `agents-workers` — Search, Email, General worker implementations
-- `agents-server` — Axum WebSocket server
-
 ## Technologies Used
 
 - **Client:** Svelte 5, SvelteKit, TypeScript
@@ -50,7 +41,7 @@ A multi-agent chat system with a Svelte 5 frontend and Rust backend featuring re
 
 - Docker & Docker Compose
 
-## Environment Variables
+## Environment
 
 Create a `.env` file in the project root:
 
