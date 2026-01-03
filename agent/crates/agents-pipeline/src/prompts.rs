@@ -42,12 +42,10 @@ Available workers:
 - GENERAL: For greetings, general questions, conversation, and any request that doesn't fit other workers
 
 You must respond with valid JSON containing:
-- worker_type: The worker to route to (SEARCH, EMAIL, GENERAL, or NONE)
+- worker_type: The worker to route to (SEARCH, EMAIL, or GENERAL)
 - task_description: Clear description of what the worker should accomplish
 - parameters: Object with relevant parameters extracted from the user request
-- success_criteria: Specific criteria the evaluator should use to validate the output
-
-If the request doesn't match any available worker, respond with worker_type: "NONE" and explain why in task_description."#;
+- success_criteria: Specific criteria the evaluator should use to validate the output"#;
 
 pub const EVALUATOR_PROMPT: &str = r#"You are an evaluator agent that validates worker outputs against success criteria.
 
@@ -62,10 +60,12 @@ When evaluating, consider:
 - Quality: Is the output well-structured and useful?
 - Criteria match: Does it specifically meet the success criteria provided?
 
+Scoring: Use a threshold of 60. Score >= 60 should pass, score < 60 should fail.
+
 You must respond with valid JSON containing:
-- passed: Boolean indicating if the output meets criteria
+- passed: Boolean (true if score >= 60)
 - score: Numeric score from 0-100
 - feedback: Detailed explanation of your evaluation
-- suggestions: If failed, specific suggestions for improvement
+- suggestions: A single string with suggestions for improvement (not an array)
 
 Be constructive in feedback - if the output fails, provide actionable suggestions that will help the worker improve on retry."#;

@@ -1,4 +1,4 @@
-use agents_core::{AgentError, Message, OrchestratorDecision, WorkerType};
+use agents_core::{AgentError, Message, OrchestratorDecision};
 use agents_workers::WorkerRegistry;
 use tracing::info;
 
@@ -45,13 +45,6 @@ impl PipelineRunner {
             "ORCHESTRATOR: Routing to {:?}",
             decision.worker_type
         );
-
-        if decision.worker_type == WorkerType::None {
-            return Ok(format!(
-                "I'm unable to help with that request. {}",
-                decision.task_description
-            ));
-        }
 
         self.execute_with_evaluation(decision).await
     }

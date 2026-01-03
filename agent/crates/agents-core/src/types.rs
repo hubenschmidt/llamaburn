@@ -6,7 +6,6 @@ pub enum WorkerType {
     Search,
     Email,
     General,
-    None,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +33,16 @@ pub struct WorkerResult {
     pub error: Option<String>,
 }
 
+impl WorkerResult {
+    pub fn ok(output: String) -> Self {
+        Self { success: true, output, error: None }
+    }
+
+    pub fn err(e: impl ToString) -> Self {
+        Self { success: false, output: String::new(), error: Some(e.to_string()) }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmailParams {
     pub to: String,
@@ -52,9 +61,16 @@ fn default_num_results() -> u8 {
     5
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageRole {
+    User,
+    Assistant,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    pub role: String,
+    pub role: MessageRole,
     pub content: String,
 }
 

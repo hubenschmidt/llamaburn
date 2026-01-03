@@ -28,7 +28,7 @@ impl Frontline {
             let recent: Vec<_> = history.iter().rev().take(4).rev().collect();
             recent
                 .iter()
-                .map(|m| format!("{}: {}", m.role.to_uppercase(), m.content))
+                .map(|m| format!("{:?}: {}", m.role, m.content))
                 .collect::<Vec<_>>()
                 .join("\n")
         };

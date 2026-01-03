@@ -1,10 +1,11 @@
 use std::env;
 use std::sync::Arc;
 
-use agents_core::Message;
+use agents_core::{Message, MessageRole};
 use agents_pipeline::{Evaluator, Frontline, Orchestrator, PipelineRunner};
 use agents_workers::{EmailWorker, GeneralWorker, SearchWorker, WorkerRegistry};
 use dashmap::DashMap;
+use tracing::warn;
 
 pub struct AppState {
     pub pipeline: PipelineRunner,
@@ -28,12 +29,18 @@ impl AppState {
 
         let mut workers = WorkerRegistry::new();
         workers.register(Arc::new(GeneralWorker::new(&worker_model)));
-        workers.register(Arc::new(SearchWorker::new(&worker_model, serpapi_key)));
-        workers.register(Arc::new(EmailWorker::new(
-            &worker_model,
-            sendgrid_key,
-            from_email,
-        )));
+
+        if let Ok(w) = SearchWorker::new(&worker_model, serpapi_key) {
+            workers.register(Arc::new(w));
+        } else {
+            warn!("SearchWorker disabled: SERPAPI_KEY not configured");
+        }
+
+        if let Ok(w) = EmailWorker::new(&worker_model, sendgrid_key, from_email) {
+            workers.register(Arc::new(w));
+        } else {
+            warn!("EmailWorker disabled: SENDGRID_API_KEY not configured");
+        }
 
         let pipeline = PipelineRunner::new(frontline, orchestrator, evaluator, workers);
 
@@ -50,12 +57,12 @@ impl AppState {
             .unwrap_or_default()
     }
 
-    pub fn add_message(&self, uuid: &str, role: &str, content: &str) {
+    pub fn add_message(&self, uuid: &str, role: MessageRole, content: &str) {
         self.conversations
             .entry(uuid.to_string())
             .or_default()
             .push(Message {
-                role: role.to_string(),
+                role,
                 content: content.to_string(),
             });
     }

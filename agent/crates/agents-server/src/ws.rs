@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use agents_core::MessageRole;
 use axum::{
     extract::{
         ws::{Message, WebSocket},
@@ -22,12 +23,10 @@ pub async fn ws_handler(
 
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let (mut sender, mut receiver) = socket.split();
-    let mut user_uuid: Option<String> = None;
+    let mut uuid = String::new();
 
     while let Some(Ok(msg)) = receiver.next().await {
-        let Message::Text(text) = msg else {
-            continue;
-        };
+        let Message::Text(text) = msg else { continue };
 
         let payload: WsPayload = match serde_json::from_str(&text) {
             Ok(p) => p,
@@ -37,24 +36,18 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
             }
         };
 
-        if let Some(uuid) = &payload.uuid {
-            user_uuid = Some(uuid.clone());
-        }
-
         if payload.init {
-            info!("Initialized connection for {:?}", user_uuid);
+            uuid = payload.uuid.unwrap_or_else(|| "anonymous".to_string());
+            info!("Connection initialized: {}", uuid);
             continue;
         }
 
-        let Some(message) = payload.message else {
-            continue;
-        };
+        let Some(message) = payload.message else { continue };
 
-        let uuid = user_uuid.clone().unwrap_or_else(|| "anonymous".to_string());
-        info!("Processing message from {}: {}...", uuid, &message[..message.len().min(50)]);
+        info!("Message from {}: {}...", uuid, &message[..message.len().min(50)]);
 
         let history = state.get_conversation(&uuid);
-        state.add_message(&uuid, "user", &message);
+        state.add_message(&uuid, MessageRole::User, &message);
 
         let response = match state.pipeline.process(&message, &history).await {
             Ok(resp) => resp,
@@ -64,10 +57,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
             }
         };
 
-        state.add_message(&uuid, "assistant", &response);
+        state.add_message(&uuid, MessageRole::Assistant, &response);
 
-        let stream_msg = serde_json::to_string(&WsResponse::stream(&response)).unwrap();
-        let end_msg = serde_json::to_string(&WsResponse::end()).unwrap();
+        let stream_msg = serde_json::to_string(&WsResponse::stream(&response)).expect("serialize");
+        let end_msg = serde_json::to_string(&WsResponse::end()).expect("serialize");
 
         if sender.send(Message::Text(stream_msg.into())).await.is_err() {
             break;
@@ -77,7 +70,5 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     }
 
-    if let Some(uuid) = user_uuid {
-        info!("Connection closed for {}", uuid);
-    }
+    info!("Connection closed: {}", uuid);
 }

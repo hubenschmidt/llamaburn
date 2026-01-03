@@ -38,25 +38,19 @@ pub struct EmailWorker {
 }
 
 impl EmailWorker {
-    pub fn new(model: &str, api_key: String, from_email: String) -> Self {
-        Self {
+    pub fn new(model: &str, api_key: String, from_email: String) -> Result<Self, AgentError> {
+        if api_key.is_empty() {
+            return Err(AgentError::ExternalApi("SENDGRID_API_KEY not configured".into()));
+        }
+        Ok(Self {
             client: LlmClient::new(model),
             http: reqwest::Client::new(),
             api_key,
             from_email,
-        }
+        })
     }
 
-    async fn send_email(
-        &self,
-        to: &str,
-        subject: &str,
-        body: &str,
-    ) -> Result<u16, AgentError> {
-        if self.api_key.is_empty() {
-            return Err(AgentError::ExternalApi("SENDGRID_API_KEY not configured".into()));
-        }
-
+    async fn send_email(&self, to: &str, subject: &str, body: &str) -> Result<u16, AgentError> {
         let mail = SendGridMail {
             personalizations: vec![Personalization {
                 to: vec![EmailAddress { email: to.to_string() }],
@@ -83,10 +77,7 @@ impl EmailWorker {
 
         if status >= 400 {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(AgentError::ExternalApi(format!(
-                "SendGrid error ({}): {}",
-                status, error_text
-            )));
+            return Err(AgentError::ExternalApi(format!("SendGrid error ({}): {}", status, error_text)));
         }
 
         Ok(status)
@@ -105,72 +96,35 @@ impl Worker for EmailWorker {
         parameters: &serde_json::Value,
         feedback: Option<&str>,
     ) -> Result<WorkerResult, AgentError> {
-        info!("EMAIL_WORKER: Starting execution");
+        info!("EmailWorker: executing");
 
-        let to = parameters
-            .get("to")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let to = parameters.get("to").and_then(|v| v.as_str()).unwrap_or("");
+        let subject = parameters.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+        let body_param = parameters.get("body").and_then(|v| v.as_str()).unwrap_or("");
 
-        let subject = parameters
-            .get("subject")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let body = if body_param.is_empty() {
+            let feedback_section = feedback
+                .map(|fb| format!("\n\nPrevious feedback: {fb}"))
+                .unwrap_or_default();
 
-        let body_param = parameters
-            .get("body")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+            let context = format!(
+                "Task: {task_description}\n\nTo: {to}\nSubject: {subject}{feedback_section}\n\nCompose the email content."
+            );
 
-        info!("EMAIL_WORKER: To: {}", to);
-
-        let feedback_section = feedback
-            .map(|fb| format!("Previous feedback to address: {fb}"))
-            .unwrap_or_default();
-
-        let context = format!(
-            "Task: {task_description}\n\nParameters provided:\n- To: {to}\n- Subject: {subject}\n- Body: {body_param}\n\n{feedback_section}\n\nCompose the email content."
-        );
-
-        let composed_body = match self.client.chat(EMAIL_WORKER_PROMPT, &context).await {
-            Ok(output) => output,
-            Err(e) => {
-                return Ok(WorkerResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(e.to_string()),
-                });
+            match self.client.chat(EMAIL_WORKER_PROMPT, &context).await {
+                Ok(output) => output,
+                Err(e) => return Ok(WorkerResult::err(e)),
             }
-        };
-
-        let final_body = if body_param.is_empty() {
-            &composed_body
         } else {
-            body_param
+            body_param.to_string()
         };
 
-        info!("EMAIL_WORKER: Sending to {}", to);
-
-        match self.send_email(to, subject, final_body).await {
-            Ok(status) => {
-                info!("EMAIL_WORKER: Sent successfully (status: {})", status);
-                Ok(WorkerResult {
-                    success: true,
-                    output: format!(
-                        "Email sent successfully to {}\nSubject: {}\nStatus: {}",
-                        to, subject, status
-                    ),
-                    error: None,
-                })
-            }
-            Err(e) => {
-                info!("EMAIL_WORKER: Send failed: {}", e);
-                Ok(WorkerResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(e.to_string()),
-                })
-            }
+        match self.send_email(to, subject, &body).await {
+            Ok(status) => Ok(WorkerResult::ok(format!(
+                "Email sent to {}\nSubject: {}\nStatus: {}",
+                to, subject, status
+            ))),
+            Err(e) => Ok(WorkerResult::err(e)),
         }
     }
 }

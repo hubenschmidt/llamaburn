@@ -1,4 +1,13 @@
 services:
+  agent:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./agent:/app
+      - agent-target:/app/target
+    command: cargo watch -x "run --bin agents-server"
+
   client:
     build:
       context: ./client
@@ -10,3 +19,6 @@ services:
       - "3000:3000"
       - "24678:24678"
     command: npm run dev -- --host
+
+volumes:
+  agent-target:

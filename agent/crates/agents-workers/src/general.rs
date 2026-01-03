@@ -29,32 +29,15 @@ impl Worker for GeneralWorker {
         _parameters: &serde_json::Value,
         feedback: Option<&str>,
     ) -> Result<WorkerResult, AgentError> {
-        info!("GENERAL_WORKER: Starting execution");
+        info!("GeneralWorker: executing");
 
-        let context = match feedback {
-            Some(fb) => format!("{task_description}\n\nPrevious feedback to address: {fb}"),
-            None => task_description.to_string(),
-        };
+        let context = feedback
+            .map(|fb| format!("{task_description}\n\nPrevious feedback: {fb}"))
+            .unwrap_or_else(|| task_description.to_string());
 
-        let result = self.client.chat(GENERAL_WORKER_PROMPT, &context).await;
-
-        match result {
-            Ok(output) => {
-                info!("GENERAL_WORKER: Execution complete");
-                Ok(WorkerResult {
-                    success: true,
-                    output,
-                    error: None,
-                })
-            }
-            Err(e) => {
-                info!("GENERAL_WORKER: Failed with error: {}", e);
-                Ok(WorkerResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(e.to_string()),
-                })
-            }
+        match self.client.chat(GENERAL_WORKER_PROMPT, &context).await {
+            Ok(output) => Ok(WorkerResult::ok(output)),
+            Err(e) => Ok(WorkerResult::err(e)),
         }
     }
 }
