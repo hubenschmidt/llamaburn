@@ -3,14 +3,13 @@
 .env.local
 
 # Rust
-backend/target/
+**/target/
 **/*.rs.bk
-Cargo.lock
 
 # Node
-frontend/node_modules/
-frontend/.svelte-kit/
-frontend/build/
+**/node_modules/
+**/.svelte-kit/
+**/build/
 
 # IDE
 .idea/
