@@ -321,6 +321,7 @@ async fn cmd_benchmark(
     let runner = BenchmarkRunner::new(ollama_host);
 
     let config = BenchmarkConfig {
+        benchmark_type: Default::default(),
         model_id: model.to_string(),
         iterations,
         warmup_runs: warmup,

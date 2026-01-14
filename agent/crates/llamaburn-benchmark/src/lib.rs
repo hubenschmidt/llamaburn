@@ -1,4 +1,4 @@
 pub mod ollama;
 pub mod runner;
 
-pub use runner::BenchmarkRunner;
+pub use runner::{BenchmarkEvent, BenchmarkRunner};

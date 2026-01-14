@@ -3,14 +3,6 @@ use llamaburn_core::model::ModelConfig;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BenchmarkRequest {
-    pub model_id: String,
-    pub iterations: Option<u32>,
-    pub warmup_runs: Option<u32>,
-    pub temperature: Option<f32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkSummary {
     pub avg_ttft_ms: f64,
     pub avg_tps: f64,
@@ -18,11 +10,6 @@ pub struct BenchmarkSummary {
     pub min_tps: f64,
     pub max_tps: f64,
     pub iterations: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BenchmarkResult {
-    pub summary: BenchmarkSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,21 +27,6 @@ pub async fn fetch_models() -> Result<Vec<ModelConfig>, String> {
         .json()
         .await
         .map_err(|e| e.to_string())
-}
-
-pub async fn run_benchmark(req: BenchmarkRequest) -> Result<BenchmarkResult, String> {
-    let resp = Request::post("/api/benchmark")
-        .json(&req)
-        .map_err(|e| e.to_string())?
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if resp.status() == 204 {
-        return Err("Benchmark cancelled".to_string());
-    }
-
-    resp.json().await.map_err(|e| e.to_string())
 }
 
 pub async fn fetch_status() -> Result<StatusResponse, String> {

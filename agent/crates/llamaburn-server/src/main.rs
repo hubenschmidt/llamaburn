@@ -10,9 +10,10 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use futures::stream::{self, Stream};
-use llamaburn_benchmark::{ollama::OllamaClient, runner::BenchmarkResult, BenchmarkRunner};
-use llamaburn_core::LlamaBurnError;
+use futures::stream::{self, Stream, StreamExt};
+use llamaburn_benchmark::{ollama::OllamaClient, BenchmarkEvent, BenchmarkRunner};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use llamaburn_core::{config::BenchmarkConfig, model::ModelConfig};
 use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, sync::Arc, time::Duration};
@@ -55,7 +56,7 @@ async fn main() {
 
     let api_routes = Router::new()
         .route("/models", get(get_models))
-        .route("/benchmark", post(run_benchmark))
+        .route("/benchmark", get(run_benchmark_stream))
         .route("/benchmark/cancel", post(cancel_benchmark))
         .route("/load", post(load_model))
         .route("/unload", post(unload_model))
@@ -91,17 +92,20 @@ async fn get_models(State(state): State<AppState>) -> Result<Json<Vec<ModelConfi
 }
 
 #[derive(Debug, Deserialize)]
-struct BenchmarkRequest {
-    model_id: String,
+struct BenchmarkQuery {
+    model: String,
+    #[serde(default)]
     iterations: Option<u32>,
-    warmup_runs: Option<u32>,
-    temperature: Option<f32>,
+    #[serde(default)]
+    warmup: Option<u32>,
+    #[serde(default)]
+    temp: Option<f32>,
 }
 
-async fn run_benchmark(
+async fn run_benchmark_stream(
     State(state): State<AppState>,
-    Json(req): Json<BenchmarkRequest>,
-) -> Result<Json<BenchmarkResult>, StatusCode> {
+    axum::extract::Query(query): axum::extract::Query<BenchmarkQuery>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let cancel_token = CancellationToken::new();
     {
         let mut cancel_guard = state.benchmark_cancel.lock().await;
@@ -109,11 +113,12 @@ async fn run_benchmark(
     }
 
     let config = BenchmarkConfig {
-        model_id: req.model_id,
-        iterations: req.iterations.unwrap_or(5),
-        warmup_runs: req.warmup_runs.unwrap_or(2),
+        benchmark_type: Default::default(),
+        model_id: query.model,
+        iterations: query.iterations.unwrap_or(5),
+        warmup_runs: query.warmup.unwrap_or(2),
         prompt_set: "default".to_string(),
-        temperature: req.temperature.unwrap_or(0.0),
+        temperature: query.temp.unwrap_or(0.0),
         max_tokens: None,
         top_p: None,
         top_k: None,
@@ -125,24 +130,26 @@ async fn run_benchmark(
         "Describe the difference between TCP and UDP.".to_string(),
     ];
 
+    let (tx, rx) = mpsc::channel::<BenchmarkEvent>(100);
     let runner = BenchmarkRunner::new(&state.ollama_host);
-    let result = runner
-        .run_cancellable(&config, &prompts, cancel_token.clone())
-        .await;
+    let state_clone = state.clone();
 
-    {
-        let mut cancel_guard = state.benchmark_cancel.lock().await;
+    tokio::spawn(async move {
+        runner.run_streaming(&config, &prompts, cancel_token, tx).await;
+        let mut cancel_guard = state_clone.benchmark_cancel.lock().await;
         *cancel_guard = None;
-    }
+    });
 
-    match result {
-        Ok(result) => Ok(Json(result)),
-        Err(LlamaBurnError::Cancelled) => Err(StatusCode::NO_CONTENT),
-        Err(e) => {
-            tracing::error!("Benchmark failed: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+    let stream = ReceiverStream::new(rx).map(|event| {
+        let json = serde_json::to_string(&event).unwrap_or_default();
+        Ok(Event::default().data(json))
+    });
+
+    Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
 }
 
 async fn cancel_benchmark(State(state): State<AppState>) -> StatusCode {

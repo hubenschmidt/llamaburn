@@ -1,3 +1,4 @@
+use futures::stream::{BoxStream, StreamExt};
 use llamaburn_core::{LlamaBurnError, ModelConfig, Result};
 use serde::{Deserialize, Serialize};
 
@@ -71,6 +72,16 @@ pub struct ChatResponse {
 pub struct ResponseMessage {
     pub role: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamChunk {
+    pub content: String,
+    pub done: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eval_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eval_duration: Option<i64>,
 }
 
 impl OllamaClient {
@@ -188,6 +199,71 @@ impl OllamaClient {
         Ok(chat_resp)
     }
 
+    pub async fn chat_stream(
+        &self,
+        model: &str,
+        prompt: &str,
+        temperature: Option<f32>,
+        max_tokens: Option<u32>,
+    ) -> Result<BoxStream<'static, Result<StreamChunk>>> {
+        let url = format!("{}/api/chat", self.host);
+
+        let options = if temperature.is_some() || max_tokens.is_some() {
+            Some(ChatOptions {
+                temperature,
+                num_predict: max_tokens,
+            })
+        } else {
+            None
+        };
+
+        let request = ChatRequest {
+            model: model.to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: prompt.to_string(),
+            }],
+            stream: true,
+            options,
+        };
+
+        let resp = self
+            .client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| LlamaBurnError::Http(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(LlamaBurnError::OllamaError(format!(
+                "Chat stream failed: {} - {}",
+                status, body
+            )));
+        }
+
+        let byte_stream = resp.bytes_stream();
+        let chunk_stream = byte_stream
+            .map(|result| {
+                result
+                    .map_err(|e| LlamaBurnError::Http(e.to_string()))
+                    .and_then(|bytes| {
+                        let text = String::from_utf8_lossy(&bytes);
+                        parse_stream_chunk(&text)
+                    })
+            })
+            .filter_map(|r| async move {
+                match r {
+                    Ok(chunk) => Some(Ok(chunk)),
+                    Err(e) => Some(Err(e)),
+                }
+            });
+
+        Ok(Box::pin(chunk_stream))
+    }
+
     pub async fn warmup(&self, model: &str) -> Result<()> {
         tracing::info!("Warming up model: {}", model);
         self.chat(model, "hi", Some(0.0), Some(1)).await?;
@@ -213,4 +289,31 @@ impl OllamaClient {
 
         Ok(())
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaStreamResponse {
+    message: Option<ResponseMessage>,
+    done: bool,
+    #[serde(default)]
+    eval_count: Option<u64>,
+    #[serde(default)]
+    eval_duration: Option<i64>,
+}
+
+fn parse_stream_chunk(text: &str) -> Result<StreamChunk> {
+    let resp: OllamaStreamResponse = serde_json::from_str(text).map_err(|e| {
+        LlamaBurnError::Http(format!(
+            "Failed to parse stream chunk: {} - {}",
+            e,
+            &text[..text.len().min(200)]
+        ))
+    })?;
+
+    Ok(StreamChunk {
+        content: resp.message.map(|m| m.content).unwrap_or_default(),
+        done: resp.done,
+        eval_count: resp.eval_count,
+        eval_duration: resp.eval_duration,
+    })
 }

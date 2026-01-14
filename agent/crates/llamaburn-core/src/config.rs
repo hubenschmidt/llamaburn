@@ -1,3 +1,4 @@
+use crate::BenchmarkType;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +92,8 @@ impl Default for AudioConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkConfig {
+    #[serde(default)]
+    pub benchmark_type: BenchmarkType,
     pub model_id: String,
     pub iterations: u32,
     pub warmup_runs: u32,

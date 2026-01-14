@@ -1,8 +1,21 @@
 use crate::ollama::OllamaClient;
+use futures::StreamExt;
 use llamaburn_core::{BenchmarkConfig, BenchmarkMetrics, LlamaBurnError, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum BenchmarkEvent {
+    Warmup { current: u32, total: u32 },
+    Iteration { current: u32, total: u32, prompt: String },
+    Token { content: String },
+    IterationComplete { metrics: BenchmarkMetrics },
+    Done { summary: BenchmarkSummary },
+    Error { message: String },
+}
 
 pub struct BenchmarkRunner {
     client: OllamaClient,
@@ -101,6 +114,114 @@ impl BenchmarkRunner {
             metrics,
             summary,
         })
+    }
+
+    pub async fn run_streaming(
+        &self,
+        config: &BenchmarkConfig,
+        prompts: &[String],
+        cancel_token: CancellationToken,
+        tx: mpsc::Sender<BenchmarkEvent>,
+    ) {
+        // Warmup runs
+        for i in 0..config.warmup_runs {
+            if cancel_token.is_cancelled() {
+                return;
+            }
+            let _ = tx.send(BenchmarkEvent::Warmup {
+                current: i + 1,
+                total: config.warmup_runs,
+            }).await;
+
+            if let Err(e) = self.client.warmup(&config.model_id).await {
+                let _ = tx.send(BenchmarkEvent::Error { message: e.to_string() }).await;
+                return;
+            }
+        }
+
+        let mut all_metrics = Vec::with_capacity(config.iterations as usize);
+
+        for i in 0..config.iterations {
+            if cancel_token.is_cancelled() {
+                return;
+            }
+
+            let prompt = &prompts[i as usize % prompts.len()];
+            let _ = tx.send(BenchmarkEvent::Iteration {
+                current: i + 1,
+                total: config.iterations,
+                prompt: prompt.clone(),
+            }).await;
+
+            let start = Instant::now();
+            let stream_result = self.client.chat_stream(
+                &config.model_id,
+                prompt,
+                Some(config.temperature),
+                config.max_tokens,
+            ).await;
+
+            let mut chunk_stream = match stream_result {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = tx.send(BenchmarkEvent::Error { message: e.to_string() }).await;
+                    return;
+                }
+            };
+
+            let mut eval_count: u64 = 0;
+            let mut eval_duration: i64 = 0;
+
+            while let Some(chunk_result) = chunk_stream.next().await {
+                if cancel_token.is_cancelled() {
+                    return;
+                }
+
+                let chunk = match chunk_result {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx.send(BenchmarkEvent::Error { message: e.to_string() }).await;
+                        return;
+                    }
+                };
+
+                if !chunk.content.is_empty() {
+                    let _ = tx.send(BenchmarkEvent::Token { content: chunk.content }).await;
+                }
+
+                if chunk.done {
+                    eval_count = chunk.eval_count.unwrap_or(0);
+                    eval_duration = chunk.eval_duration.unwrap_or(0);
+                }
+            }
+
+            let total_ms = start.elapsed().as_secs_f64() * 1000.0;
+            let eval_duration_ns = eval_duration.max(0) as f64;
+            let tokens_per_sec = if eval_duration_ns > 0.0 {
+                (eval_count as f64) / (eval_duration_ns / 1_000_000_000.0)
+            } else {
+                0.0
+            };
+
+            let metrics = BenchmarkMetrics {
+                time_to_first_token_ms: 0.0, // Not available in streaming mode
+                inter_token_latency_ms: 0.0,
+                tokens_per_sec,
+                total_generation_ms: total_ms,
+                prompt_eval_ms: 0.0,
+                load_duration_ms: 0.0,
+                input_sequence_length: 0,
+                output_sequence_length: eval_count as u32,
+                power_draw_watts: None,
+                energy_wh: None,
+            };
+
+            let _ = tx.send(BenchmarkEvent::IterationComplete { metrics: metrics.clone() }).await;
+            all_metrics.push(metrics);
+        }
+
+        let summary = Self::calculate_summary(&all_metrics);
+        let _ = tx.send(BenchmarkEvent::Done { summary }).await;
     }
 
     async fn run_single(&self, config: &BenchmarkConfig, prompt: &str) -> Result<BenchmarkMetrics> {
