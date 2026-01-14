@@ -526,6 +526,33 @@ kwh_rate = 0.12  # $/kWh (US average ~$0.12)
 
 ---
 
+## Docker Usage
+
+Build and run LlamaBurn via Docker:
+
+```bash
+# Build the image
+docker compose build
+
+# List available models
+docker compose run --rm llamaburn models
+
+# Run benchmark
+docker compose run --rm llamaburn benchmark llama3.1:8b --iterations 5
+
+# Stress test
+docker compose run --rm llamaburn stress --model llama3.1:8b --mode ramp
+
+# Results saved to ./results/
+```
+
+**Notes**:
+- Ollama must be running on the host machine
+- Results are persisted to `./results/` via volume mount
+- Uses `host.docker.internal` to reach host Ollama
+
+---
+
 ## Implementation Priority
 
 1. **Phase 1**: Benchmark runner + JSON storage + CLI (`llamaburn benchmark`)

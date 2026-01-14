@@ -1,0 +1,15 @@
+[package]
+name = "llamaburn-benchmark"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Benchmark runner for LlamaBurn"
+
+[dependencies]
+llamaburn-core = { path = "../llamaburn-core" }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }

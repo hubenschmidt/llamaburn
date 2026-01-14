@@ -1,11 +1,17 @@
 [workspace]
 resolver = "2"
 members = [
+    # Legacy agent crates (to be migrated)
     "crates/agents-core",
     "crates/agents-llm",
     "crates/agents-workers",
     "crates/agents-pipeline",
     "crates/agents-server",
+    # New LlamaBurn crates
+    "crates/llamaburn-core",
+    "crates/llamaburn-benchmark",
+    "crates/llamaburn-cli",
+    "crates/llamaburn-web",
 ]
 
 [workspace.package]
@@ -50,11 +56,18 @@ dashmap = "6.1"
 # Environment
 dotenvy = "0.15"
 
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
 # UUID
 uuid = { version = "1.11", features = ["v4", "serde"] }
 
-# Internal crates
+# Internal crates (legacy)
 agents-core = { path = "crates/agents-core" }
 agents-llm = { path = "crates/agents-llm" }
 agents-workers = { path = "crates/agents-workers" }
 agents-pipeline = { path = "crates/agents-pipeline" }
+
+# LlamaBurn crates
+llamaburn-core = { path = "crates/llamaburn-core" }
+llamaburn-benchmark = { path = "crates/llamaburn-benchmark" }

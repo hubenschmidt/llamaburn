@@ -1,125 +1,165 @@
-# svelte-rust-agents-sdk
+# LlamaBurn
 
-A multi-agent chat system with a Svelte 5 frontend and Rust backend featuring real-time streaming, LLM observability, and modular worker architecture.
+A benchmarking, profiling, and stress-testing suite for local LLM models.
 
-- **Real-time streaming** — Responses stream token-by-token as they're generated
-- **Multi-agent pipeline** — Frontline, Orchestrator, Workers, Evaluator
-- **Local model support** — Auto-discovers Ollama models at startup
-- **Benchmarking mode** — Toggle verbose metrics (tokens/sec, eval time, load time)
-- **LLM observability** — Token usage and response time displayed per message
-- **Modular workers** — Search (Serper), Email (SendGrid), General conversation
+- **Performance benchmarks** — TTFT, TPS, inter-token latency metrics
+- **Stress testing** — Ramp, sweep, sustained, spike modes
+- **Accuracy evaluation** — LLM-as-Judge using Claude or GPT
+- **Local model support** — Auto-discovers Ollama models
+- **Dual interface** — Standalone CLI + Leptos web UI
+
+## CLI Usage
+
+```bash
+# Build the CLI
+cd agent && cargo build --release -p llamaburn-cli
+
+# List available models
+llamaburn models
+
+# Run benchmark
+llamaburn benchmark llama3.1:8b --iterations 5
+
+# Show system status
+llamaburn status
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `models` | List available Ollama models |
+| `benchmark` | Run benchmark tests on a model |
+| `status` | Show system status |
+
+### Benchmark Options
+
+```bash
+llamaburn benchmark <MODEL> [OPTIONS]
+
+Arguments:
+  <MODEL>    Model ID to benchmark (e.g., llama3.1:8b)
+
+Options:
+  -i, --iterations <N>    Number of iterations [default: 3]
+  -w, --warmup <N>        Warmup runs [default: 1]
+  -p, --prompts <FILE>    Prompts file (one per line)
+  -t, --temperature <F>   Temperature [default: 0.7]
+  -m, --max-tokens <N>    Max tokens to generate
+  -o, --output <FILE>     Output JSON file
+  --ollama-host <URL>     Ollama host [default: http://localhost:11434]
+```
+
+### Example Output
+
+```
+Model: llama3.1:8b
+
+Iteration 1/3
+  TTFT: 245.3 ms | TPS: 42.1 | Total: 1,523 ms
+
+Iteration 2/3
+  TTFT: 12.1 ms | TPS: 45.8 | Total: 1,412 ms
+
+Iteration 3/3
+  TTFT: 11.8 ms | TPS: 44.2 | Total: 1,456 ms
+
+Summary:
+  Avg TTFT: 89.7 ms
+  Avg TPS: 44.0 (min: 42.1, max: 45.8)
+  Avg Total: 1,463.7 ms
+```
 
 ## Architecture
 
 ```
-┌─────────────────┐                    ┌─────────────────────────────────────┐
-│                 │◄──── WebSocket ────│              Agent                  │
-│  Svelte 5 UI    │                    │                                     │
-│                 │                    │  Model Discovery                    │
-│  Settings       │                    │  ├── OpenAI (cloud)                 │
-│  └─ Dev Mode    │                    │  └── Ollama /api/tags (local)       │
-└─────────────────┘                    │                                     │
-                                       │  ┌─────────┐    ┌─────────────┐     │
-                                       │  │Frontline│───►│ Orchestrator│     │
-                                       │  └─────────┘    └──────┬──────┘     │
-                                       │                        │            │
-                                       │         ┌──────────────┼──────────┐ │
-                                       │         ▼              ▼          ▼ │
-                                       │    ┌────────┐    ┌────────┐  ┌─────┐│
-                                       │    │ Search │    │ Email  │  │ Gen ││
-                                       │    │(Serper)│    │(SGGrid)│  │     ││
-                                       │    └────────┘    └────────┘  └─────┘│
-                                       │                        │            │
-                                       │                   ┌────▼────┐       │
-                                       │                   │Evaluator│       │
-                                       │                   └─────────┘       │
-                                       └─────────────────────────────────────┘
+┌─────────────────────────────────────────────┐
+│              CLI (llamaburn)                │
+│           Rust binary, standalone           │
+└──────────────────┬──────────────────────────┘
+                   │
+┌──────────────────┴──────────────────────────┐
+│           Shared Core Crates                │
+│  - benchmark, stress, eval, profiler        │
+│  - multi-modal processors                   │
+└──────────────────┬──────────────────────────┘
+                   │
+┌──────────────────┴──────────────────────────┐
+│         Web UI (Leptos → WASM)              │
+│  - Real-time charts                         │
+│  - Model comparison                         │
+│  - Export results                           │
+└─────────────────────────────────────────────┘
 ```
-
-## Technologies Used
-
-- **Client:** Svelte 5, SvelteKit, TypeScript
-- **Agent:** Rust 1.92, Axum, Tokio
-- **LLM:** OpenAI API, Ollama (local models)
-
-## Prerequisites
-
-- Docker & Docker Compose
-- (Optional) [Ollama](https://ollama.ai) for local models
-
-## Environment
-
-Create a `.env` file in `agent/`:
-
-```env
-# Required
-OPENAI_API_KEY=sk-...
-
-# Optional
-SERPER_API_KEY=...            # For web search (serper.dev)
-SENDGRID_API_KEY=...          # For email sending
-SENDGRID_FROM_EMAIL=noreply@example.com
-RUST_LOG=info
-```
-
-## Run
-
-```bash
-docker compose up
-```
-
-- Client: http://localhost:3001
-- Agent: http://localhost:8000
-
-## Local Models (Ollama)
-
-The agent auto-discovers installed Ollama models at startup via `/api/tags`.
-
-### Setup
-
-1. Install [Ollama](https://ollama.ai)
-2. Pull models: `ollama pull llama3.1`
-3. Start Ollama: `ollama serve`
-4. Start the agent — models appear in the dropdown
-
-### Supported Features
-
-- All installed models automatically listed
-- Quantization variants shown (e.g., `Q4_1`, `Q8_0`)
-- Model warm-up on selection (pre-loads for faster first response)
-
-## Developer Mode (Benchmarking)
-
-Toggle via the settings icon to see detailed performance metrics for local models.
-
-### Metrics Displayed
-
-| Metric | Description |
-|--------|-------------|
-| **tokens/sec** | Generation speed |
-| **eval_ms** | Time spent generating tokens |
-| **prompt_eval_ms** | Time spent processing input |
-| **load_duration_ms** | Model load time |
-
-### How It Works
-
-When enabled, uses Ollama's native `/api/chat` endpoint instead of OpenAI-compatible `/v1/chat/completions` to access rich metrics not available via the standard API.
 
 ## Project Structure
 
 ```
 .
-├── agent/                    # Rust backend
+├── agent/
 │   └── crates/
-│       ├── agents-core/      # Shared types
-│       ├── agents-llm/       # LLM client + Ollama integration
-│       ├── agents-pipeline/  # Frontline, Orchestrator, Evaluator
-│       ├── agents-workers/   # Search, Email, General workers
-│       └── agents-server/    # Axum server, WebSocket handler
-├── client/                   # SvelteKit frontend
-│   └── src/
-│       ├── lib/components/   # Settings, ChatMessage, ChatInput
-│       ├── lib/stores/       # chat.ts, settings.ts
-│       └── routes/           # +page.svelte
+│       ├── llamaburn-core/       # Shared types, config
+│       ├── llamaburn-benchmark/  # Performance benchmarks
+│       ├── llamaburn-cli/        # CLI binary
+│       └── llamaburn-web/        # Leptos frontend
+├── spec/
+│   └── SPEC.md                   # Full specification
 └── docker-compose.yml
 ```
+
+## Using Docker
+
+Build and start the application:
+
+```bash
+docker compose up
+```
+
+The CLI starts automatically. Attach to the interactive CLI:
+
+```bash
+docker attach llamaburn-cli-1
+```
+
+Use the interactive commands:
+
+```
+help                    Show available commands
+models, m               List available Ollama models
+benchmark, b <model>    Run benchmark (e.g., `b llama3.1:8b -i 3`)
+status, s               Show system status
+clear                   Clear screen
+exit, quit, q           Exit the application
+```
+
+## Prerequisites
+
+- Docker & Docker Compose
+- [Ollama](https://ollama.ai) running on host with models installed
+
+```bash
+ollama pull llama3.1:8b
+ollama serve
+```
+
+## Native Build (Alternative)
+
+```bash
+cd agent
+cargo build --release -p llamaburn-cli
+./target/release/llamaburn
+```
+
+## Metrics
+
+| Metric | Description |
+|--------|-------------|
+| **TTFT** | Time to first token (ms) |
+| **TPS** | Tokens per second |
+| **ITL** | Inter-token latency (ms) |
+| **ISL** | Input sequence length |
+| **OSL** | Output sequence length |
+
+## License
+
+MIT

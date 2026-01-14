@@ -1,0 +1,22 @@
+[package]
+name = "llamaburn-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CLI for LlamaBurn benchmarking suite"
+
+[[bin]]
+name = "llamaburn"
+path = "src/main.rs"
+
+[dependencies]
+llamaburn-core = { path = "../llamaburn-core" }
+llamaburn-benchmark = { path = "../llamaburn-benchmark" }
+tokio = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

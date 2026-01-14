@@ -1,18 +1,11 @@
 services:
-  agent:
-    build: ./agent
-    ports:
-      - "8000:8000"
+  cli:
+    build: .
+    stdin_open: true
+    tty: true
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    env_file:
-      - ./agent/.env
-    restart: unless-stopped
-
-  client:
-    build: ./client
-    ports:
-      - "3001:3001"
-    depends_on:
-      - agent
-    restart: unless-stopped
+    volumes:
+      - ./results:/app/results
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11434
