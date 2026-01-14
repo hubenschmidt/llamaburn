@@ -1,7 +1,8 @@
 use crate::ollama::OllamaClient;
-use llamaburn_core::{BenchmarkConfig, BenchmarkMetrics, Result};
+use llamaburn_core::{BenchmarkConfig, BenchmarkMetrics, LlamaBurnError, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 pub struct BenchmarkRunner {
     client: OllamaClient,
@@ -59,6 +60,49 @@ impl BenchmarkRunner {
         })
     }
 
+    pub async fn run_cancellable(
+        &self,
+        config: &BenchmarkConfig,
+        prompts: &[String],
+        cancel_token: CancellationToken,
+    ) -> Result<BenchmarkResult> {
+        tracing::info!("Starting cancellable benchmark for model: {}", config.model_id);
+
+        // Warmup runs
+        for i in 0..config.warmup_runs {
+            if cancel_token.is_cancelled() {
+                return Err(LlamaBurnError::Cancelled);
+            }
+            tracing::debug!("Warmup run {}/{}", i + 1, config.warmup_runs);
+            self.client.warmup(&config.model_id).await?;
+        }
+
+        let mut metrics = Vec::with_capacity(config.iterations as usize);
+
+        for i in 0..config.iterations {
+            if cancel_token.is_cancelled() {
+                return Err(LlamaBurnError::Cancelled);
+            }
+            let prompt = &prompts[i as usize % prompts.len()];
+            tracing::info!("Iteration {}/{}", i + 1, config.iterations);
+
+            let m = self.run_single(config, prompt).await?;
+            metrics.push(m);
+        }
+
+        if metrics.is_empty() {
+            return Err(LlamaBurnError::Cancelled);
+        }
+
+        let summary = Self::calculate_summary(&metrics);
+
+        Ok(BenchmarkResult {
+            config: config.clone(),
+            metrics,
+            summary,
+        })
+    }
+
     async fn run_single(&self, config: &BenchmarkConfig, prompt: &str) -> Result<BenchmarkMetrics> {
         let start = Instant::now();
 
@@ -75,9 +119,9 @@ impl BenchmarkRunner {
         let total_ms = start.elapsed().as_secs_f64() * 1000.0;
 
         let eval_count = response.eval_count.unwrap_or(0) as u32;
-        let eval_duration_ns = response.eval_duration.unwrap_or(0) as f64;
-        let load_duration_ns = response.load_duration.unwrap_or(0) as f64;
-        let prompt_eval_ns = response.prompt_eval_duration.unwrap_or(0) as f64;
+        let eval_duration_ns = response.eval_duration.unwrap_or(0).max(0) as f64;
+        let load_duration_ns = response.load_duration.unwrap_or(0).max(0) as f64;
+        let prompt_eval_ns = response.prompt_eval_duration.unwrap_or(0).max(0) as f64;
         let prompt_eval_count = response.prompt_eval_count.unwrap_or(0) as u32;
 
         let eval_ms = eval_duration_ns / 1_000_000.0;

@@ -96,7 +96,7 @@ body {
 
 /* GPU Sidebar */
 .gpu-sidebar {
-    width: 320px;
+    width: 31.5%;
     background: var(--bg-secondary);
     border-left: 1px solid var(--border);
     padding: 1rem;
@@ -251,6 +251,27 @@ body {
 
 .unload-btn:disabled {
     opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.cancel-btn {
+    padding: 0.75rem 1.5rem;
+    background: #dc3545;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.cancel-btn:hover:not(:disabled) {
+    background: #c82333;
+}
+
+.cancel-btn:disabled {
+    opacity: 0.7;
     cursor: not-allowed;
 }
 

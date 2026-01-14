@@ -11,6 +11,9 @@ pub enum LlamaBurnError {
     #[error("Benchmark failed: {0}")]
     BenchmarkFailed(String),
 
+    #[error("Benchmark cancelled")]
+    Cancelled,
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

@@ -121,41 +121,41 @@ fn slugify(name: &str) -> String {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OllamaMetrics {
     #[serde(default)]
-    pub total_duration: u64,
+    pub total_duration: i64,
     #[serde(default)]
-    pub load_duration: u64,
+    pub load_duration: i64,
     #[serde(default)]
     pub prompt_eval_count: u32,
     #[serde(default)]
-    pub prompt_eval_duration: u64,
+    pub prompt_eval_duration: i64,
     #[serde(default)]
     pub eval_count: u32,
     #[serde(default)]
-    pub eval_duration: u64,
+    pub eval_duration: i64,
 }
 
 impl OllamaMetrics {
     pub fn tokens_per_sec(&self) -> f64 {
-        if self.eval_duration == 0 {
+        if self.eval_duration <= 0 {
             return 0.0;
         }
         (self.eval_count as f64) / (self.eval_duration as f64 / 1_000_000_000.0)
     }
 
     pub fn total_duration_ms(&self) -> u64 {
-        self.total_duration / 1_000_000
+        self.total_duration.max(0) as u64 / 1_000_000
     }
 
     pub fn load_duration_ms(&self) -> u64 {
-        self.load_duration / 1_000_000
+        self.load_duration.max(0) as u64 / 1_000_000
     }
 
     pub fn prompt_eval_ms(&self) -> u64 {
-        self.prompt_eval_duration / 1_000_000
+        self.prompt_eval_duration.max(0) as u64 / 1_000_000
     }
 
     pub fn eval_ms(&self) -> u64 {
-        self.eval_duration / 1_000_000
+        self.eval_duration.max(0) as u64 / 1_000_000
     }
 }
 

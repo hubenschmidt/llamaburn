@@ -1,6 +1,7 @@
 services:
   web-ui:
     image: llamaburn-devbase
+    pull_policy: never
     depends_on:
       - llamaburn-agent
     working_dir: /app/agent/crates/llamaburn-web
@@ -11,10 +12,12 @@ services:
     environment:
       - OLLAMA_HOST=http://host.docker.internal:11434
       - CARGO_HOME=/app/.cargo
+      - SCCACHE_DIR=/app/.sccache
     volumes:
       - ./agent:/app/agent
       - cargo-cache:/app/.cargo
       - target-cache:/app/agent/target
+      - sccache-cache:/app/.sccache
     command: trunk serve --address 0.0.0.0 --port 3001 --proxy-backend=http://llamaburn-agent:8000/api/
 
   llamaburn-agent:
@@ -38,11 +41,12 @@ services:
       - PORT=8000
       - STATIC_DIR=/app/agent/crates/llamaburn-web/dist
       - CARGO_HOME=/app/.cargo
+      - SCCACHE_DIR=/app/.sccache
     volumes:
       - ./agent:/app/agent
       - cargo-cache:/app/.cargo
       - target-cache:/app/agent/target
-      - /opt/rocm:/opt/rocm:ro
+      - sccache-cache:/app/.sccache
     command: cargo watch -x 'run -p llamaburn-server'
 
   cli:
@@ -62,3 +66,4 @@ services:
 volumes:
   cargo-cache:
   target-cache:
+  sccache-cache:

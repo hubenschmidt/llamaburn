@@ -9,6 +9,7 @@ description = "Benchmark runner for LlamaBurn"
 [dependencies]
 llamaburn-core = { path = "../llamaburn-core" }
 tokio = { workspace = true }
+tokio-util = "0.7"
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

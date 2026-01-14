@@ -160,6 +160,25 @@ cargo build --release -p llamaburn-cli
 | **ISL** | Input sequence length |
 | **OSL** | Output sequence length |
 
+## Troubleshooting
+
+### Models not loading in Docker
+
+If the benchmark runner shows "EOF while parsing" or can't list models, Ollama may be bound to localhost only. Configure it to accept connections from Docker:
+
+```bash
+sudo mkdir -p /etc/systemd/system/ollama.service.d
+echo -e '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0"' | sudo tee /etc/systemd/system/ollama.service.d/override.conf
+sudo systemctl daemon-reload && sudo systemctl restart ollama
+```
+
+Verify it's listening on all interfaces:
+
+```bash
+ss -tlnp | grep 11434
+# Should show 0.0.0.0:11434 instead of 127.0.0.1:11434
+```
+
 ## License
 
 MIT

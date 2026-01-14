@@ -43,15 +43,18 @@ pub async fn fetch_models() -> Result<Vec<ModelConfig>, String> {
 }
 
 pub async fn run_benchmark(req: BenchmarkRequest) -> Result<BenchmarkResult, String> {
-    Request::post("/api/benchmark")
+    let resp = Request::post("/api/benchmark")
         .json(&req)
         .map_err(|e| e.to_string())?
         .send()
         .await
-        .map_err(|e| e.to_string())?
-        .json()
-        .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    if resp.status() == 204 {
+        return Err("Benchmark cancelled".to_string());
+    }
+
+    resp.json().await.map_err(|e| e.to_string())
 }
 
 pub async fn fetch_status() -> Result<StatusResponse, String> {
@@ -98,5 +101,18 @@ pub async fn unload_model(model_id: String) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("Failed to unload model: {}", resp.status()))
+    }
+}
+
+pub async fn cancel_benchmark() -> Result<(), String> {
+    let resp = Request::post("/api/benchmark/cancel")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if resp.ok() || resp.status() == 404 {
+        Ok(())
+    } else {
+        Err(format!("Failed to cancel benchmark: {}", resp.status()))
     }
 }

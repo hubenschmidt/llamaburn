@@ -1,11 +1,30 @@
-FROM docker.io/library/rust:1.92-slim-bookworm
+FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     curl \
     xz-utils \
+    mold \
+    python3 \
+    gnupg \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Install ROCm SMI library (7.1.1 for Ubuntu 24.04)
+RUN curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg \
+    && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.1.1 noble main" > /etc/apt/sources.list.d/rocm.list \
+    && apt-get update \
+    && apt-get install -y rocm-smi-lib \
+    && rm -rf /var/lib/apt/lists/*
+
+# Add ROCm to PATH and LD_LIBRARY_PATH
+ENV PATH="/opt/rocm/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/opt/rocm/lib"
 
 # Install trunk
 RUN curl -L https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz | tar xzf - -C /usr/local/bin
@@ -13,5 +32,12 @@ RUN curl -L https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x
 # Install cargo-watch
 RUN curl -L https://github.com/watchexec/cargo-watch/releases/download/v8.5.3/cargo-watch-v8.5.3-x86_64-unknown-linux-gnu.tar.xz | tar xJf - --strip-components=1 -C /usr/local/bin
 
+# Install sccache
+RUN curl -L https://github.com/mozilla/sccache/releases/download/v0.8.1/sccache-v0.8.1-x86_64-unknown-linux-musl.tar.gz | tar xzf - --strip-components=1 -C /usr/local/bin sccache-v0.8.1-x86_64-unknown-linux-musl/sccache
+
 # Add wasm target
 RUN rustup target add wasm32-unknown-unknown
+
+# Use sccache for compilation caching
+ENV RUSTC_WRAPPER=/usr/local/bin/sccache
+

@@ -1,3 +1,5 @@
+use axum::body::Body;
+use axum::http::{Request, Response};
 use axum::{
     extract::State,
     http::StatusCode,
@@ -10,31 +12,51 @@ use axum::{
 };
 use futures::stream::{self, Stream};
 use llamaburn_benchmark::{ollama::OllamaClient, runner::BenchmarkResult, BenchmarkRunner};
+use llamaburn_core::LlamaBurnError;
 use llamaburn_core::{config::BenchmarkConfig, model::ModelConfig};
 use serde::{Deserialize, Serialize};
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::process::Command;
-use tower_http::{cors::CorsLayer, services::ServeDir};
+use tokio_util::sync::CancellationToken;
+use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 
 #[derive(Clone)]
 struct AppState {
     ollama_host: String,
+    benchmark_cancel: Arc<tokio::sync::Mutex<Option<CancellationToken>>>,
 }
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_env_filter("info")
+        .init();
 
     let ollama_host =
         std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
     let static_dir = std::env::var("STATIC_DIR").unwrap_or_else(|_| "./dist".to_string());
     let port = std::env::var("PORT").unwrap_or_else(|_| "3001".to_string());
 
-    let state = AppState { ollama_host };
+    let state = AppState {
+        ollama_host,
+        benchmark_cancel: Arc::new(tokio::sync::Mutex::new(None)),
+    };
+
+    let trace_layer = TraceLayer::new_for_http()
+        .on_request(|req: &Request<Body>, _span: &tracing::Span| {
+            tracing::info!("{} {}", req.method(), req.uri());
+        })
+        .on_response(
+            |res: &Response<Body>, latency: Duration, _span: &tracing::Span| {
+                tracing::info!("→ {} ({} ms)", res.status().as_u16(), latency.as_millis());
+            },
+        );
 
     let api_routes = Router::new()
         .route("/models", get(get_models))
         .route("/benchmark", post(run_benchmark))
+        .route("/benchmark/cancel", post(cancel_benchmark))
         .route("/load", post(load_model))
         .route("/unload", post(unload_model))
         .route("/status", get(get_status))
@@ -44,17 +66,20 @@ async fn main() {
     let app = Router::new()
         .nest("/api", api_routes)
         .fallback_service(ServeDir::new(&static_dir))
+        .layer(trace_layer)
         .layer(CorsLayer::permissive());
 
     let addr = format!("0.0.0.0:{}", port);
     tracing::info!("Server listening on {}", addr);
     tracing::info!("Serving static files from {}", static_dir);
+    tracing::info!("HTTP request logging enabled");
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 
 async fn get_models(State(state): State<AppState>) -> Result<Json<Vec<ModelConfig>>, StatusCode> {
+    tracing::info!("GET /api/models called");
     let client = OllamaClient::new(&state.ollama_host);
     match client.list_models().await {
         Ok(models) => Ok(Json(models)),
@@ -77,6 +102,12 @@ async fn run_benchmark(
     State(state): State<AppState>,
     Json(req): Json<BenchmarkRequest>,
 ) -> Result<Json<BenchmarkResult>, StatusCode> {
+    let cancel_token = CancellationToken::new();
+    {
+        let mut cancel_guard = state.benchmark_cancel.lock().await;
+        *cancel_guard = Some(cancel_token.clone());
+    }
+
     let config = BenchmarkConfig {
         model_id: req.model_id,
         iterations: req.iterations.unwrap_or(5),
@@ -95,12 +126,33 @@ async fn run_benchmark(
     ];
 
     let runner = BenchmarkRunner::new(&state.ollama_host);
-    match runner.run(&config, &prompts).await {
+    let result = runner
+        .run_cancellable(&config, &prompts, cancel_token.clone())
+        .await;
+
+    {
+        let mut cancel_guard = state.benchmark_cancel.lock().await;
+        *cancel_guard = None;
+    }
+
+    match result {
         Ok(result) => Ok(Json(result)),
+        Err(LlamaBurnError::Cancelled) => Err(StatusCode::NO_CONTENT),
         Err(e) => {
             tracing::error!("Benchmark failed: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
+    }
+}
+
+async fn cancel_benchmark(State(state): State<AppState>) -> StatusCode {
+    let cancel_guard = state.benchmark_cancel.lock().await;
+    if let Some(token) = cancel_guard.as_ref() {
+        token.cancel();
+        tracing::info!("Benchmark cancelled");
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
     }
 }
 

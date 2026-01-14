@@ -12,6 +12,7 @@ pub fn BenchmarkPage() -> impl IntoView {
     let (running, set_running) = signal(false);
     let (loading, set_loading) = signal(false);
     let (unloading, set_unloading) = signal(false);
+    let (cancelling, set_cancelling) = signal(false);
     let (result, set_result) = signal(None::<BenchmarkResult>);
     let (error, set_error) = signal(None::<String>);
 
@@ -45,9 +46,11 @@ pub fn BenchmarkPage() -> impl IntoView {
 
             match api::run_benchmark(req).await {
                 Ok(r) => set_result.set(Some(r)),
+                Err(e) if e.contains("cancelled") => {} // Cancelled, no error to show
                 Err(e) => set_error.set(Some(e)),
             }
             set_running.set(false);
+            set_cancelling.set(false);
         });
     };
 
@@ -62,6 +65,13 @@ pub fn BenchmarkPage() -> impl IntoView {
                 Err(e) => set_error.set(Some(e)),
             }
             set_unloading.set(false);
+        });
+    };
+
+    let cancel_benchmark = move |_| {
+        set_cancelling.set(true);
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = api::cancel_benchmark().await;
         });
     };
 
@@ -169,6 +179,15 @@ pub fn BenchmarkPage() -> impl IntoView {
                             view! { <span>"Run Benchmark"</span> }.into_any()
                         }}
                     </button>
+                    {move || running.get().then(|| view! {
+                        <button
+                            class="cancel-btn"
+                            disabled=move || cancelling.get()
+                            on:click=cancel_benchmark
+                        >
+                            {move || if cancelling.get() { "Cancelling..." } else { "Cancel" }}
+                        </button>
+                    })}
                     <button
                         class="unload-btn"
                         disabled=move || running.get() || loading.get() || unloading.get() || selected_model.get().is_empty()

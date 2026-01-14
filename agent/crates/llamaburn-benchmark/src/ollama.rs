@@ -58,11 +58,11 @@ pub struct ChatResponse {
     #[serde(default)]
     pub eval_count: Option<u64>,
     #[serde(default)]
-    pub eval_duration: Option<u64>,
+    pub eval_duration: Option<i64>,
     #[serde(default)]
-    pub load_duration: Option<u64>,
+    pub load_duration: Option<i64>,
     #[serde(default)]
-    pub prompt_eval_duration: Option<u64>,
+    pub prompt_eval_duration: Option<i64>,
     #[serde(default)]
     pub prompt_eval_count: Option<u64>,
 }
