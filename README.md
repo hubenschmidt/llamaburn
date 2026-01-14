@@ -1,4 +1,4 @@
-# LlamaBurn is a work in progress === 🔥
+# LlamaBurn is a work in progress 🔥
 
 <img width="1898" height="1699" alt="image" src="https://github.com/user-attachments/assets/91b4fb23-edfb-4238-9961-a452c540e738" />
 
