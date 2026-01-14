@@ -15,6 +15,7 @@ struct TagsResponse {
 #[derive(Debug, Deserialize)]
 struct OllamaModel {
     name: String,
+    #[allow(dead_code)]
     size: u64,
     #[serde(default)]
     details: Option<ModelDetails>,
@@ -22,7 +23,9 @@ struct OllamaModel {
 
 #[derive(Debug, Deserialize)]
 struct ModelDetails {
+    #[allow(dead_code)]
     parameter_size: Option<String>,
+    #[allow(dead_code)]
     quantization_level: Option<String>,
 }
 

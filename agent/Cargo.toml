@@ -12,6 +12,7 @@ members = [
     "crates/llamaburn-benchmark",
     "crates/llamaburn-cli",
     "crates/llamaburn-web",
+    "crates/llamaburn-server",
 ]
 
 [workspace.package]

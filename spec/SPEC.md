@@ -438,9 +438,10 @@ Full Rust frontend compiled to WASM, located in `llamaburn-web/` crate.
 1. **Benchmark** — Configure and run benchmarks, view results
 2. **Stress Test** — Configure load tests, live metrics graph
 3. **Eval** — Select eval sets, view scores with judge reasoning
-4. **Multi-Modal** — Image/audio/video/3D benchmarks with live preview
-5. **Results** — List/compare past runs, export to CSV
-6. **System Monitor** — Real-time CPU/GPU/RAM gauges
+4. **Docs** — Getting started, feature guides, CLI reference
+5. **Multi-Modal** — Image/audio/video/3D benchmarks with live preview
+6. **Results** — List/compare past runs, export to CSV
+7. **System Monitor** — Real-time CPU/GPU/RAM gauges
 
 **High-Performance Features**:
 - WebGPU canvas for 3D output rendering
