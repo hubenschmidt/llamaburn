@@ -129,7 +129,6 @@ declare module '$env/static/private' {
 	export const npm_config_globalconfig: string;
 	export const npm_config_init_module: string;
 	export const PWD: string;
-	export const ENABLE_IDE_INTEGRATION: string;
 	export const npm_execpath: string;
 	export const XDG_DATA_DIRS: string;
 	export const NVM_CD_FLAGS: string;
@@ -273,7 +272,6 @@ declare module '$env/dynamic/private' {
 		npm_config_globalconfig: string;
 		npm_config_init_module: string;
 		PWD: string;
-		ENABLE_IDE_INTEGRATION: string;
 		npm_execpath: string;
 		XDG_DATA_DIRS: string;
 		NVM_CD_FLAGS: string;

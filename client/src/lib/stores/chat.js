@@ -1,27 +1,26 @@
 import { writable, get } from 'svelte/store';
-import type { ChatMsg, ModelConfig, WsPayload, WsResponse, WsMetadata } from '$lib/types';
-import { devMode } from './settings';
+import { devMode } from './settings.js';
 
 function createChatStore() {
-	const messages = writable<ChatMsg[]>([
+	const messages = writable([
 		{ user: 'Bot', msg: 'Welcome! How can I help you today?' }
 	]);
 	const isConnected = writable(false);
 	const isStreaming = writable(false);
 	const isThinking = writable(false);
-	const models = writable<ModelConfig[]>([]);
-	const selectedModel = writable<string>('');
-	const modelStatus = writable<string>('');
+	const models = writable([]);
+	const selectedModel = writable('');
+	const modelStatus = writable('');
 
-	let ws: WebSocket | null = null;
+	let ws = null;
 	const uuid = crypto.randomUUID();
 
-	function connect(url: string) {
+	function connect(url) {
 		ws = new WebSocket(url);
 
 		ws.onopen = () => {
 			isConnected.set(true);
-			const payload: WsPayload = { uuid, init: true };
+			const payload = { uuid, init: true };
 			ws?.send(JSON.stringify(payload));
 		};
 
@@ -36,7 +35,7 @@ function createChatStore() {
 		};
 
 		ws.onmessage = (event) => {
-			const data: WsResponse = JSON.parse(event.data);
+			const data = JSON.parse(event.data);
 
 			if (data.models) {
 				models.set(data.models);
@@ -62,7 +61,7 @@ function createChatStore() {
 		};
 	}
 
-	function handleStreamChunk(chunk: string) {
+	function handleStreamChunk(chunk) {
 		isThinking.set(false);
 		messages.update((msgs) => {
 			const last = msgs[msgs.length - 1];
@@ -79,7 +78,7 @@ function createChatStore() {
 		});
 	}
 
-	function handleStreamEnd(metadata?: WsMetadata) {
+	function handleStreamEnd(metadata) {
 		isStreaming.set(false);
 		isThinking.set(false);
 		messages.update((msgs) => {
@@ -91,13 +90,13 @@ function createChatStore() {
 		});
 	}
 
-	function send(text: string) {
+	function send(text) {
 		if (!ws || !text.trim()) return;
 
 		messages.update((msgs) => [...msgs, { user: 'User', msg: text }]);
 		isThinking.set(true);
 
-		const payload: WsPayload = {
+		const payload = {
 			uuid,
 			message: text,
 			model_id: get(selectedModel),
@@ -106,9 +105,9 @@ function createChatStore() {
 		ws.send(JSON.stringify(payload));
 	}
 
-	function wake(modelId: string, previousModelId?: string) {
+	function wake(modelId, previousModelId) {
 		if (!ws) return;
-		const payload: WsPayload = {
+		const payload = {
 			uuid,
 			wake_model_id: modelId,
 			unload_model_id: previousModelId
@@ -116,16 +115,16 @@ function createChatStore() {
 		ws.send(JSON.stringify(payload));
 	}
 
-	function unload(modelId: string) {
+	function unload(modelId) {
 		if (!ws) return;
-		const payload: WsPayload = {
+		const payload = {
 			uuid,
 			unload_model_id: modelId
 		};
 		ws.send(JSON.stringify(payload));
 	}
 
-	function isLocalModel(modelId: string): boolean {
+	function isLocalModel(modelId) {
 		const model = get(models).find((m) => m.id === modelId);
 		return model?.api_base !== null && model?.api_base !== undefined;
 	}
