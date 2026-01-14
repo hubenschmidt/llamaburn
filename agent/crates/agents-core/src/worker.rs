@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::{AgentError, WorkerResult, WorkerType};
+use crate::{AgentError, ModelConfig, WorkerResult, WorkerType};
 
 #[async_trait]
 pub trait Worker: Send + Sync {
@@ -11,5 +11,6 @@ pub trait Worker: Send + Sync {
         task_description: &str,
         parameters: &serde_json::Value,
         feedback: Option<&str>,
+        model: &ModelConfig,
     ) -> Result<WorkerResult, AgentError>;
 }

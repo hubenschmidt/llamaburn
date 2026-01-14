@@ -1,4 +1,4 @@
-use agents_core::{AgentError, Worker, WorkerResult, WorkerType};
+use agents_core::{AgentError, ModelConfig, Worker, WorkerResult, WorkerType};
 use agents_llm::{LlmClient, LlmStream};
 use async_trait::async_trait;
 use serde::Serialize;
@@ -31,23 +31,25 @@ struct Content {
 }
 
 pub struct EmailWorker {
-    client: LlmClient,
     http: reqwest::Client,
     api_key: String,
     from_email: String,
 }
 
 impl EmailWorker {
-    pub fn new(model: &str, api_key: String, from_email: String) -> Result<Self, AgentError> {
+    pub fn new(api_key: String, from_email: String) -> Result<Self, AgentError> {
         if api_key.is_empty() {
             return Err(AgentError::ExternalApi("SENDGRID_API_KEY not configured".into()));
         }
         Ok(Self {
-            client: LlmClient::new(model),
             http: reqwest::Client::new(),
             api_key,
             from_email,
         })
+    }
+
+    fn create_client(model: &ModelConfig) -> LlmClient {
+        LlmClient::new(&model.model, model.api_base.as_deref())
     }
 
     async fn send_email(&self, to: &str, subject: &str, body: &str) -> Result<u16, AgentError> {
@@ -83,11 +85,11 @@ impl EmailWorker {
         Ok(status)
     }
 
-    /// Stream email body composition. Returns None if body is already provided (no LLM needed).
     pub async fn compose_stream(
         &self,
         task_description: &str,
         parameters: &serde_json::Value,
+        model: &ModelConfig,
     ) -> Result<Option<LlmStream>, AgentError> {
         let body_param = parameters.get("body").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -95,7 +97,7 @@ impl EmailWorker {
             return Ok(None);
         }
 
-        info!("EmailWorker: streaming body composition");
+        info!("EmailWorker: streaming body composition with model {}", model.name);
 
         let to = parameters.get("to").and_then(|v| v.as_str()).unwrap_or("");
         let subject = parameters.get("subject").and_then(|v| v.as_str()).unwrap_or("");
@@ -104,7 +106,8 @@ impl EmailWorker {
             "Task: {task_description}\n\nTo: {to}\nSubject: {subject}\n\nCompose the email content."
         );
 
-        let stream = self.client.chat_stream(EMAIL_WORKER_PROMPT, &context).await?;
+        let client = Self::create_client(model);
+        let stream = client.chat_stream(EMAIL_WORKER_PROMPT, &context).await?;
         Ok(Some(stream))
     }
 
@@ -125,8 +128,9 @@ impl Worker for EmailWorker {
         task_description: &str,
         parameters: &serde_json::Value,
         feedback: Option<&str>,
+        model: &ModelConfig,
     ) -> Result<WorkerResult, AgentError> {
-        info!("EmailWorker: executing");
+        info!("EmailWorker: executing with model {}", model.name);
 
         let to = parameters.get("to").and_then(|v| v.as_str()).unwrap_or("");
         let subject = parameters.get("subject").and_then(|v| v.as_str()).unwrap_or("");
@@ -141,7 +145,8 @@ impl Worker for EmailWorker {
                 "Task: {task_description}\n\nTo: {to}\nSubject: {subject}{feedback_section}\n\nCompose the email content."
             );
 
-            match self.client.chat(EMAIL_WORKER_PROMPT, &context).await {
+            let client = Self::create_client(model);
+            match client.chat(EMAIL_WORKER_PROMPT, &context).await {
                 Ok(resp) => resp.content,
                 Err(e) => return Ok(WorkerResult::err(e)),
             }

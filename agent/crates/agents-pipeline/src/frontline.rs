@@ -1,4 +1,4 @@
-use agents_core::{AgentError, FrontlineDecision, Message};
+use agents_core::{AgentError, FrontlineDecision, Message, ModelConfig};
 use agents_llm::{LlmClient, LlmStream};
 use serde::Deserialize;
 use tracing::info;
@@ -10,40 +10,44 @@ struct QuickDecision {
     should_route: bool,
 }
 
-pub struct Frontline {
-    client: LlmClient,
-}
+pub struct Frontline;
 
 impl Frontline {
-    pub fn new(model: &str) -> Self {
-        Self {
-            client: LlmClient::new(model),
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn create_client(model: &ModelConfig) -> LlmClient {
+        LlmClient::new(&model.model, model.api_base.as_deref())
+    }
+
+    fn build_history_context(history: &[Message]) -> String {
+        if history.is_empty() {
+            return String::new();
         }
+        let recent: Vec<_> = history.iter().rev().take(4).rev().collect();
+        recent
+            .iter()
+            .map(|m| format!("{:?}: {}", m.role, m.content))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     pub async fn process(
         &self,
         user_input: &str,
         history: &[Message],
+        model: &ModelConfig,
     ) -> Result<(bool, String), AgentError> {
-        info!("FRONTLINE: Processing request");
+        info!("FRONTLINE: Processing request with model {}", model.name);
 
-        let history_context = if history.is_empty() {
-            String::new()
-        } else {
-            let recent: Vec<_> = history.iter().rev().take(4).rev().collect();
-            recent
-                .iter()
-                .map(|m| format!("{:?}: {}", m.role, m.content))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-
+        let history_context = Self::build_history_context(history);
         let context = format!(
             "Recent conversation:\n{history_context}\n\nCurrent user message: {user_input}\n\nDecide whether to handle this directly or route to the orchestrator."
         );
 
-        let (response, _metrics) = self.client.structured::<FrontlineDecision>(FRONTLINE_PROMPT, &context).await?;
+        let client = Self::create_client(model);
+        let (response, _metrics) = client.structured::<FrontlineDecision>(FRONTLINE_PROMPT, &context).await?;
 
         if response.should_route {
             info!("FRONTLINE: Routing to orchestrator ({})", response.response);
@@ -54,29 +58,19 @@ impl Frontline {
         Ok((false, response.response))
     }
 
-    /// Returns Some(stream) if frontline handles directly, None if should route to orchestrator
     pub async fn process_stream(
         &self,
         user_input: &str,
         history: &[Message],
+        model: &ModelConfig,
     ) -> Result<Option<LlmStream>, AgentError> {
-        info!("FRONTLINE: Processing request (streaming)");
+        info!("FRONTLINE: Processing request (streaming) with model {}", model.name);
 
-        let history_context = if history.is_empty() {
-            String::new()
-        } else {
-            let recent: Vec<_> = history.iter().rev().take(4).rev().collect();
-            recent
-                .iter()
-                .map(|m| format!("{:?}: {}", m.role, m.content))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-
+        let history_context = Self::build_history_context(history);
         let context = format!("Recent conversation:\n{history_context}\n\nUser: {user_input}");
 
-        let (decision, _metrics) = self
-            .client
+        let client = Self::create_client(model);
+        let (decision, _metrics) = client
             .structured::<QuickDecision>(FRONTLINE_DECISION_PROMPT, &context)
             .await?;
 
@@ -86,7 +80,13 @@ impl Frontline {
         }
 
         info!("FRONTLINE: Streaming direct response");
-        let stream = self.client.chat_stream(FRONTLINE_RESPONSE_PROMPT, &context).await?;
+        let stream = client.chat_stream(FRONTLINE_RESPONSE_PROMPT, &context).await?;
         Ok(Some(stream))
+    }
+}
+
+impl Default for Frontline {
+    fn default() -> Self {
+        Self::new()
     }
 }

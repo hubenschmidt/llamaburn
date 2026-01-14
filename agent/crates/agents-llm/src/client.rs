@@ -74,9 +74,16 @@ pub struct LlmClient {
 }
 
 impl LlmClient {
-    pub fn new(model: &str) -> Self {
+    pub fn new(model: &str, api_base: Option<&str>) -> Self {
+        let config = match api_base {
+            Some(base) => OpenAIConfig::new()
+                .with_api_base(base)
+                .with_api_key("ollama"),
+            None => OpenAIConfig::default(),
+        };
+
         Self {
-            client: Client::new(),
+            client: Client::with_config(config),
             default_model: model.to_string(),
         }
     }

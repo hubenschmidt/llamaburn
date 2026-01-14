@@ -6,7 +6,13 @@ services:
     volumes:
       - ./agent:/app
       - agent-target:/app/target
-    command: cargo watch -x "run --bin agents-server"
+    command: cargo watch --poll -x "run --bin agents-server"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 60s
 
   client:
     build:
@@ -16,9 +22,12 @@ services:
       - ./client:/app
       - /app/node_modules
     ports:
-      - "3000:3000"
+      - "3001:3001"
       - "24678:24678"
     command: npm run dev -- --host
+    depends_on:
+      agent:
+        condition: service_healthy
 
 volumes:
   agent-target:

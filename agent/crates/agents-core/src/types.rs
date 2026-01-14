@@ -79,3 +79,11 @@ pub struct FrontlineDecision {
     pub should_route: bool,
     pub response: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelConfig {
+    pub id: String,
+    pub name: String,
+    pub model: String,
+    pub api_base: Option<String>,
+}

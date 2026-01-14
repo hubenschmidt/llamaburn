@@ -1,26 +1,27 @@
-use agents_core::{AgentError, Message, OrchestratorDecision};
+use agents_core::{AgentError, Message, ModelConfig, OrchestratorDecision};
 use agents_llm::LlmClient;
 use tracing::info;
 
 use crate::prompts::ORCHESTRATOR_PROMPT;
 
-pub struct Orchestrator {
-    client: LlmClient,
-}
+pub struct Orchestrator;
 
 impl Orchestrator {
-    pub fn new(model: &str) -> Self {
-        Self {
-            client: LlmClient::new(model),
-        }
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn create_client(model: &ModelConfig) -> LlmClient {
+        LlmClient::new(&model.model, model.api_base.as_deref())
     }
 
     pub async fn route(
         &self,
         user_input: &str,
         history: &[Message],
+        model: &ModelConfig,
     ) -> Result<OrchestratorDecision, AgentError> {
-        info!("ORCHESTRATOR: Routing request");
+        info!("ORCHESTRATOR: Routing request with model {}", model.name);
 
         let history_context = if history.is_empty() {
             String::new()
@@ -37,8 +38,8 @@ impl Orchestrator {
             "Conversation History:\n{history_context}\n\nCurrent User Request: {user_input}\n\nAnalyze this request and determine which worker should handle it."
         );
 
-        let (decision, _metrics) = self
-            .client
+        let client = Self::create_client(model);
+        let (decision, _metrics) = client
             .structured::<OrchestratorDecision>(ORCHESTRATOR_PROMPT, &context)
             .await?;
 
@@ -49,5 +50,11 @@ impl Orchestrator {
         );
 
         Ok(decision)
+    }
+}
+
+impl Default for Orchestrator {
+    fn default() -> Self {
+        Self::new()
     }
 }

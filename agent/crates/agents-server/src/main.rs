@@ -1,14 +1,21 @@
-mod protocol;
+mod dto;
+mod error;
+mod handlers;
+mod services;
 mod state;
 mod ws;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
-use axum::{routing::get, Router};
+use axum::body::Body;
+use axum::http::{Request, Response};
+use axum::routing::{get, post};
+use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::trace::TraceLayer;
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use state::AppState;
 
@@ -16,9 +23,13 @@ use state::AppState;
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
-        .with(tracing_subscriber::EnvFilter::from_default_env())
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info".parse().unwrap()),
+        )
+        .compact()
         .init();
 
     let state = Arc::new(AppState::new());
@@ -28,9 +39,31 @@ async fn main() -> Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let app = Router::new()
+    let trace_layer = TraceLayer::new_for_http()
+        .make_span_with(|req: &Request<Body>| {
+            tracing::info_span!(
+                "request",
+                method = %req.method(),
+                uri = %req.uri(),
+                version = ?req.version(),
+            )
+        })
+        .on_response(|res: &Response<Body>, latency: Duration, _span: &tracing::Span| {
+            info!(
+                latency = %format!("{} ms", latency.as_millis()),
+                status = %res.status().as_u16(),
+                "finished processing request"
+            );
+        });
+
+    let logged_routes = Router::new()
         .route("/ws", get(ws::ws_handler))
-        .route("/health", get(|| async { "OK" }))
+        .route("/wake", post(handlers::model::wake))
+        .layer(trace_layer);
+
+    let app = Router::new()
+        .merge(logged_routes)
+        .route("/health", get(handlers::health))
         .layer(cors)
         .with_state(state);
 

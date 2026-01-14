@@ -1,4 +1,4 @@
-use agents_core::{AgentError, Message, OrchestratorDecision, WorkerType};
+use agents_core::{AgentError, Message, ModelConfig, OrchestratorDecision, WorkerType};
 use agents_llm::LlmStream;
 use agents_workers::{EmailWorker, GeneralWorker, SearchWorker, WorkerRegistry};
 use tracing::info;
@@ -17,7 +17,6 @@ pub struct PipelineRunner {
     orchestrator: Orchestrator,
     evaluator: Evaluator,
     workers: WorkerRegistry,
-    // Concrete workers for streaming
     general_worker: GeneralWorker,
     search_worker: Option<SearchWorker>,
     email_worker: Option<EmailWorker>,
@@ -49,14 +48,15 @@ impl PipelineRunner {
         user_input: &str,
         history: &[Message],
         use_evaluator: bool,
+        model: &ModelConfig,
     ) -> Result<String, AgentError> {
-        let (should_route, response) = self.frontline.process(user_input, history).await?;
+        let (should_route, response) = self.frontline.process(user_input, history, model).await?;
 
         if !should_route {
             return Ok(response);
         }
 
-        let decision = self.orchestrator.route(user_input, history).await?;
+        let decision = self.orchestrator.route(user_input, history, model).await?;
 
         info!(
             "ORCHESTRATOR: Routing to {:?}",
@@ -64,53 +64,51 @@ impl PipelineRunner {
         );
 
         if !use_evaluator {
-            return self.execute_without_evaluation(decision).await;
+            return self.execute_without_evaluation(decision, model).await;
         }
 
-        self.execute_with_evaluation(decision).await
+        self.execute_with_evaluation(decision, model).await
     }
 
     pub async fn process_stream(
         &self,
         user_input: &str,
         history: &[Message],
+        model: &ModelConfig,
     ) -> Result<StreamResponse, AgentError> {
-        // Try frontline streaming first
-        let frontline_stream = self.frontline.process_stream(user_input, history).await?;
+        let frontline_stream = self.frontline.process_stream(user_input, history, model).await?;
         if let Some(stream) = frontline_stream {
             return Ok(StreamResponse::Stream(stream));
         }
 
-        // Frontline decided to route - go to orchestrator
-        let decision = self.orchestrator.route(user_input, history).await?;
+        let decision = self.orchestrator.route(user_input, history, model).await?;
         info!("ORCHESTRATOR (stream): Routing to {:?}", decision.worker_type);
 
-        self.execute_worker_stream(decision).await
+        self.execute_worker_stream(decision, model).await
     }
 
     async fn execute_worker_stream(
         &self,
         decision: OrchestratorDecision,
+        model: &ModelConfig,
     ) -> Result<StreamResponse, AgentError> {
         match decision.worker_type {
             WorkerType::General => {
-                let stream = self.general_worker.execute_stream(&decision.task_description).await?;
+                let stream = self.general_worker.execute_stream(&decision.task_description, model).await?;
                 Ok(StreamResponse::Stream(stream))
             }
             WorkerType::Search => {
                 let Some(ref worker) = self.search_worker else {
                     return Ok(StreamResponse::Complete("Search worker not configured".into()));
                 };
-                let stream = worker.execute_stream(&decision.task_description, &decision.parameters).await?;
+                let stream = worker.execute_stream(&decision.task_description, &decision.parameters, model).await?;
                 Ok(StreamResponse::Stream(stream))
             }
             WorkerType::Email => {
-                let Some(ref worker) = self.email_worker else {
+                let Some(ref _worker) = self.email_worker else {
                     return Ok(StreamResponse::Complete("Email worker not configured".into()));
                 };
-                // Email worker streams the body composition, then we need to send the email
-                // For now, fall back to non-streaming since email needs full body before sending
-                let result = self.execute_without_evaluation(decision).await?;
+                let result = self.execute_without_evaluation(decision, model).await?;
                 Ok(StreamResponse::Complete(result))
             }
         }
@@ -119,6 +117,7 @@ impl PipelineRunner {
     async fn execute_without_evaluation(
         &self,
         decision: OrchestratorDecision,
+        model: &ModelConfig,
     ) -> Result<String, AgentError> {
         let worker_result = self
             .workers
@@ -127,6 +126,7 @@ impl PipelineRunner {
                 &decision.task_description,
                 &decision.parameters,
                 None,
+                model,
             )
             .await?;
 
@@ -141,6 +141,7 @@ impl PipelineRunner {
     async fn execute_with_evaluation(
         &self,
         decision: OrchestratorDecision,
+        model: &ModelConfig,
     ) -> Result<String, AgentError> {
         let mut feedback: Option<String> = None;
 
@@ -154,6 +155,7 @@ impl PipelineRunner {
                     &decision.task_description,
                     &decision.parameters,
                     feedback.as_deref(),
+                    model,
                 )
                 .await?;
 
@@ -171,6 +173,7 @@ impl PipelineRunner {
                     &worker_result.output,
                     &decision.task_description,
                     &decision.success_criteria,
+                    model,
                 )
                 .await?;
 

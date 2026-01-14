@@ -1,4 +1,4 @@
-use agents_core::{AgentError, Worker, WorkerResult, WorkerType};
+use agents_core::{AgentError, ModelConfig, Worker, WorkerResult, WorkerType};
 use agents_llm::{LlmClient, LlmStream};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -25,21 +25,23 @@ struct OrganicResult {
 }
 
 pub struct SearchWorker {
-    client: LlmClient,
     http: reqwest::Client,
     api_key: String,
 }
 
 impl SearchWorker {
-    pub fn new(model: &str, api_key: String) -> Result<Self, AgentError> {
+    pub fn new(api_key: String) -> Result<Self, AgentError> {
         if api_key.is_empty() {
             return Err(AgentError::ExternalApi("SERPER_API_KEY not configured".into()));
         }
         Ok(Self {
-            client: LlmClient::new(model),
             http: reqwest::Client::new(),
             api_key,
         })
+    }
+
+    fn create_client(model: &ModelConfig) -> LlmClient {
+        LlmClient::new(&model.model, model.api_base.as_deref())
     }
 
     async fn search(&self, query: &str, num_results: u8) -> Result<Vec<OrganicResult>, AgentError> {
@@ -95,8 +97,9 @@ impl SearchWorker {
         &self,
         task_description: &str,
         parameters: &serde_json::Value,
+        model: &ModelConfig,
     ) -> Result<LlmStream, AgentError> {
-        info!("SearchWorker: streaming response");
+        info!("SearchWorker: streaming response with model {}", model.name);
 
         let query = parameters
             .get("query")
@@ -118,7 +121,8 @@ impl SearchWorker {
             "Task: {task_description}\n\nSearch Results:\n{formatted}\n\nSynthesize these results into a clear response."
         );
 
-        self.client.chat_stream(SEARCH_WORKER_PROMPT, &context).await
+        let client = Self::create_client(model);
+        client.chat_stream(SEARCH_WORKER_PROMPT, &context).await
     }
 }
 
@@ -133,8 +137,9 @@ impl Worker for SearchWorker {
         task_description: &str,
         parameters: &serde_json::Value,
         feedback: Option<&str>,
+        model: &ModelConfig,
     ) -> Result<WorkerResult, AgentError> {
-        info!("SearchWorker: executing");
+        info!("SearchWorker: executing with model {}", model.name);
 
         let query = parameters
             .get("query")
@@ -161,7 +166,8 @@ impl Worker for SearchWorker {
             Self::format_results(&search_results)
         );
 
-        match self.client.chat(SEARCH_WORKER_PROMPT, &context).await {
+        let client = Self::create_client(model);
+        match client.chat(SEARCH_WORKER_PROMPT, &context).await {
             Ok(resp) => Ok(WorkerResult::ok(resp.content)),
             Err(e) => Ok(WorkerResult::err(e)),
         }

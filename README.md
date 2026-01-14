@@ -64,6 +64,6 @@ RUST_LOG=info
 docker compose up
 ```
 
-- Client: http://localhost:3000
+- Client: http://localhost:3001
 - Agent: http://localhost:8000
 

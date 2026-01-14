@@ -3,20 +3,16 @@ services:
     build: ./agent
     ports:
       - "8000:8000"
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
-      - WORKER_MODEL=${WORKER_MODEL:-gpt-4o-mini}
-      - SERPER_API_KEY=${SERPER_API_KEY:-}
-      - SENDGRID_API_KEY=${SENDGRID_API_KEY:-}
-      - SENDGRID_FROM_EMAIL=${SENDGRID_FROM_EMAIL:-noreply@example.com}
-      - RUST_LOG=${RUST_LOG:-info}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - ./agent/.env
     restart: unless-stopped
 
   client:
     build: ./client
     ports:
-      - "3000:3000"
+      - "3001:3001"
     depends_on:
       - agent
     restart: unless-stopped

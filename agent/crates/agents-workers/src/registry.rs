@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agents_core::{AgentError, Worker, WorkerResult, WorkerType};
+use agents_core::{AgentError, ModelConfig, Worker, WorkerResult, WorkerType};
 
 pub struct WorkerRegistry {
     workers: HashMap<WorkerType, Arc<dyn Worker>>,
@@ -24,13 +24,14 @@ impl WorkerRegistry {
         task_description: &str,
         parameters: &serde_json::Value,
         feedback: Option<&str>,
+        model: &ModelConfig,
     ) -> Result<WorkerResult, AgentError> {
         let worker = self
             .workers
             .get(&worker_type)
             .ok_or_else(|| AgentError::UnknownWorker(format!("{:?}", worker_type)))?;
 
-        worker.execute(task_description, parameters, feedback).await
+        worker.execute(task_description, parameters, feedback, model).await
     }
 }
 

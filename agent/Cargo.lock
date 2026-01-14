@@ -20,6 +20,7 @@ dependencies = [
  "async-openai",
  "async-trait",
  "futures",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
