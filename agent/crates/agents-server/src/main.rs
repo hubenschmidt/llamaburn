@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
         .compact()
         .init();
 
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(AppState::new().await);
 
     let cors = CorsLayer::new()
         .allow_origin(Any)

@@ -212,7 +212,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
             },
         };
 
-        info!("Sending metadata: {}", metadata);
+        info!("Sending metadata: {:?}", metadata);
         let end_msg =
             serde_json::to_string(&WsResponse::end_with_metadata(metadata)).expect("serialize");
         if sender.send(Message::Text(end_msg.into())).await.is_err() {

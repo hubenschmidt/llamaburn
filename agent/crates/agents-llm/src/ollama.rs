@@ -1,12 +1,100 @@
 use std::pin::Pin;
 
-use agents_core::{AgentError, Message, MessageRole};
+use agents_core::{AgentError, Message, MessageRole, ModelConfig};
 use futures::Stream;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::StreamChunk;
+
+// === Model Discovery ===
+
+#[derive(Debug, Deserialize)]
+pub struct OllamaTagsResponse {
+    pub models: Vec<OllamaModelInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OllamaModelInfo {
+    pub name: String,
+    #[serde(default)]
+    pub details: OllamaModelDetails,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[allow(dead_code)]
+pub struct OllamaModelDetails {
+    pub parameter_size: Option<String>,
+    pub family: Option<String>,
+}
+
+pub async fn discover_models(ollama_host: &str) -> Result<Vec<ModelConfig>, AgentError> {
+    let client = Client::new();
+    let url = format!("{}/api/tags", ollama_host.trim_end_matches('/'));
+
+    let response = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| AgentError::LlmError(format!("Ollama discovery failed: {}", e)))?;
+
+    let tags: OllamaTagsResponse = response
+        .json()
+        .await
+        .map_err(|e| AgentError::LlmError(format!("Failed to parse Ollama response: {}", e)))?;
+
+    let models: Vec<ModelConfig> = tags
+        .models
+        .into_iter()
+        .map(|m| {
+            let display_name = format_display_name(&m.name, &m.details);
+            let id = format!("ollama-{}", slugify(&m.name));
+            ModelConfig {
+                id,
+                name: display_name,
+                model: m.name,
+                api_base: Some(format!("{}/v1", ollama_host.trim_end_matches('/'))),
+            }
+        })
+        .collect();
+
+    info!("Discovered {} Ollama models", models.len());
+    Ok(models)
+}
+
+fn format_display_name(model_name: &str, _details: &OllamaModelDetails) -> String {
+    let last_segment = model_name.split('/').last().unwrap_or(model_name);
+    let parts: Vec<&str> = last_segment.splitn(2, ':').collect();
+
+    let base = parts[0];
+    let tag = parts.get(1).copied().unwrap_or("");
+
+    // Capitalize first letter
+    let display_base = base
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_default()
+        + &base.chars().skip(1).collect::<String>();
+
+    let tag_suffix = if tag.is_empty() {
+        String::new()
+    } else {
+        format!(":{}", tag)
+    };
+
+    format!("{}{} (Local)", display_base, tag_suffix)
+}
+
+fn slugify(name: &str) -> String {
+    name.to_lowercase()
+        .replace(['/', ':', '.'], "-")
+        .replace("--", "-")
+        .trim_matches('-')
+        .to_string()
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OllamaMetrics {

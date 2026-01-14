@@ -2,26 +2,21 @@ use std::env;
 use std::sync::Arc;
 
 use agents_core::{Message, MessageRole, ModelConfig};
+use agents_llm::discover_models;
 use agents_pipeline::{Evaluator, Frontline, Orchestrator, PipelineRunner};
 use agents_workers::{EmailWorker, GeneralWorker, SearchWorker, WorkerRegistry};
 use dashmap::DashMap;
-use tracing::warn;
+use tracing::{info, warn};
 
-fn default_models() -> Vec<ModelConfig> {
-    vec![
-        ModelConfig {
-            id: "openai-gpt4o".into(),
-            name: "GPT-4o (OpenAI)".into(),
-            model: "gpt-4o".into(),
-            api_base: None,
-        },
-        ModelConfig {
-            id: "ollama-nemotron".into(),
-            name: "Nemotron 30B (Local)".into(),
-            model: "hf.co/unsloth/Nemotron-3-Nano-30B-A3B-GGUF:Q4_1".into(),
-            api_base: Some("http://host.docker.internal:11434/v1".into()),
-        },
-    ]
+const OLLAMA_HOST: &str = "http://host.docker.internal:11434";
+
+fn cloud_models() -> Vec<ModelConfig> {
+    vec![ModelConfig {
+        id: "openai-gpt4o".into(),
+        name: "GPT-4o (OpenAI)".into(),
+        model: "gpt-4o".into(),
+        api_base: None,
+    }]
 }
 
 pub struct AppState {
@@ -31,8 +26,21 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new() -> Self {
-        let models = default_models();
+    pub async fn new() -> Self {
+        let mut models = cloud_models();
+
+        match discover_models(OLLAMA_HOST).await {
+            Ok(ollama_models) => {
+                info!("Found {} local Ollama models", ollama_models.len());
+                for m in &ollama_models {
+                    info!("  - {} ({})", m.name, m.id);
+                }
+                models.extend(ollama_models);
+            }
+            Err(e) => {
+                warn!("Ollama discovery failed (is Ollama running?): {}", e);
+            }
+        }
 
         let frontline = Frontline::new();
         let orchestrator = Orchestrator::new();
@@ -105,8 +113,3 @@ impl AppState {
     }
 }
 
-impl Default for AppState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
