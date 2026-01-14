@@ -59,6 +59,7 @@ async fn main() -> Result<()> {
     let logged_routes = Router::new()
         .route("/ws", get(ws::ws_handler))
         .route("/wake", post(handlers::model::wake))
+        .route("/unload", post(handlers::model::unload))
         .layer(trace_layer);
 
     let app = Router::new()

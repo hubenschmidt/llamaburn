@@ -15,6 +15,7 @@ use futures::{SinkExt, StreamExt};
 use tracing::{error, info};
 
 use crate::dto::{InitResponse, WsMetadata, WsPayload, WsResponse};
+use crate::services::model;
 use crate::state::AppState;
 
 pub async fn ws_handler(
@@ -50,6 +51,42 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
             };
             let init_msg = serde_json::to_string(&init_resp).expect("serialize");
             if sender.send(Message::Text(init_msg.into())).await.is_err() {
+                break;
+            }
+            continue;
+        }
+
+        if let Some(wake_model_id) = &payload.wake_model_id {
+            let status_msg = serde_json::to_string(&WsResponse::model_status("loading")).expect("serialize");
+            if sender.send(Message::Text(status_msg.into())).await.is_err() {
+                break;
+            }
+
+            let prev = payload.unload_model_id.as_deref();
+            match model::warmup(&state, wake_model_id, prev).await {
+                Ok(m) => info!("Model {} ready via WebSocket", m.name),
+                Err(e) => error!("Wake failed: {:?}", e),
+            }
+
+            let ready_msg = serde_json::to_string(&WsResponse::model_status("ready")).expect("serialize");
+            if sender.send(Message::Text(ready_msg.into())).await.is_err() {
+                break;
+            }
+            continue;
+        }
+
+        if let Some(unload_model_id) = &payload.unload_model_id {
+            let status_msg = serde_json::to_string(&WsResponse::model_status("unloading")).expect("serialize");
+            if sender.send(Message::Text(status_msg.into())).await.is_err() {
+                break;
+            }
+
+            if let Err(e) = model::unload(&state, unload_model_id).await {
+                error!("Unload failed: {:?}", e);
+            }
+
+            let ready_msg = serde_json::to_string(&WsResponse::model_status("ready")).expect("serialize");
+            if sender.send(Message::Text(ready_msg.into())).await.is_err() {
                 break;
             }
             continue;

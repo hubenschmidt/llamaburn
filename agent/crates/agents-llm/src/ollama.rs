@@ -64,6 +64,28 @@ pub async fn discover_models(ollama_host: &str) -> Result<Vec<ModelConfig>, Agen
     Ok(models)
 }
 
+pub async fn unload_model(ollama_host: &str, model_name: &str) -> Result<(), AgentError> {
+    let client = Client::new();
+    let url = format!("{}/api/chat", ollama_host.trim_end_matches('/'));
+
+    let body = serde_json::json!({
+        "model": model_name,
+        "messages": [],
+        "keep_alive": 0
+    });
+
+    client
+        .post(&url)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| AgentError::LlmError(format!("Failed to unload model: {}", e)))?;
+
+    info!("Unloaded model: {}", model_name);
+    Ok(())
+}
+
 fn format_display_name(model_name: &str, _details: &OllamaModelDetails) -> String {
     let last_segment = model_name.split('/').last().unwrap_or(model_name);
     let parts: Vec<&str> = last_segment.splitn(2, ':').collect();

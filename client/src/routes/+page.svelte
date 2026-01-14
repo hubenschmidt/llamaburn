@@ -5,7 +5,7 @@
 	import ChatMessage from '$lib/components/ChatMessage.svelte';
 	import ChatInput from '$lib/components/ChatInput.svelte';
 
-	const { messages, isConnected, isStreaming, isThinking, models, selectedModel } = chat;
+	const { messages, isConnected, isStreaming, isThinking, models, selectedModel, modelStatus } = chat;
 	const WS_URL = 'ws://localhost:8000/ws';
 
 	let inputText = '';
@@ -17,11 +17,32 @@
 		return () => chat.disconnect();
 	});
 
-	$: if ($selectedModel && $selectedModel !== prevModel) {
-		if (prevModel && chat.isLocalModel($selectedModel)) {
-			chat.wake($selectedModel);
-		}
+	$: if ($selectedModel !== prevModel) {
+		handleModelChange(prevModel, $selectedModel);
 		prevModel = $selectedModel;
+	}
+
+	function handleModelChange(prev: string, next: string) {
+		const prevIsLocal = prev && chat.isLocalModel(prev);
+		const nextIsLocal = next && chat.isLocalModel(next);
+
+		// Unload GPU: switching to "none"
+		if (next === 'none' && prevIsLocal) {
+			chat.unload(prev);
+			return;
+		}
+
+		// Switching to a local model: wake it (and unload previous if also local)
+		if (nextIsLocal) {
+			const prevToUnload = prevIsLocal ? prev : undefined;
+			chat.wake(next, prevToUnload);
+			return;
+		}
+
+		// Switching from local to cloud: unload the local model
+		if (prevIsLocal && !nextIsLocal) {
+			chat.unload(prev);
+		}
 	}
 
 	async function scrollToBottom() {
@@ -47,6 +68,7 @@
 		isConnected={$isConnected}
 		models={$models}
 		bind:selectedModel={$selectedModel}
+		modelStatus={$modelStatus}
 	/>
 
 	<main>
@@ -72,8 +94,8 @@
 
 		<ChatInput
 			bind:value={inputText}
-			disabled={!$isConnected}
-			sendDisabled={!$isConnected || $isStreaming || !inputText.trim()}
+			disabled={!$isConnected || $selectedModel === 'none'}
+			sendDisabled={!$isConnected || $isStreaming || !inputText.trim() || $selectedModel === 'none'}
 			onSend={handleSend}
 		/>
 	</main>

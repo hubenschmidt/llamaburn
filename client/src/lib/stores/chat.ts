@@ -11,6 +11,7 @@ function createChatStore() {
 	const isThinking = writable(false);
 	const models = writable<ModelConfig[]>([]);
 	const selectedModel = writable<string>('');
+	const modelStatus = writable<string>('');
 
 	let ws: WebSocket | null = null;
 	const uuid = crypto.randomUUID();
@@ -42,6 +43,11 @@ function createChatStore() {
 				if (data.models.length > 0 && !get(selectedModel)) {
 					selectedModel.set(data.models[0].id);
 				}
+				return;
+			}
+
+			if (data.model_status !== undefined) {
+				modelStatus.set(data.model_status);
 				return;
 			}
 
@@ -100,16 +106,23 @@ function createChatStore() {
 		ws.send(JSON.stringify(payload));
 	}
 
-	async function wake(modelId: string) {
-		try {
-			await fetch('http://localhost:8000/wake', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ model_id: modelId })
-			});
-		} catch (e) {
-			console.error('Wake failed:', e);
-		}
+	function wake(modelId: string, previousModelId?: string) {
+		if (!ws) return;
+		const payload: WsPayload = {
+			uuid,
+			wake_model_id: modelId,
+			unload_model_id: previousModelId
+		};
+		ws.send(JSON.stringify(payload));
+	}
+
+	function unload(modelId: string) {
+		if (!ws) return;
+		const payload: WsPayload = {
+			uuid,
+			unload_model_id: modelId
+		};
+		ws.send(JSON.stringify(payload));
 	}
 
 	function isLocalModel(modelId: string): boolean {
@@ -133,9 +146,11 @@ function createChatStore() {
 		isThinking,
 		models,
 		selectedModel,
+		modelStatus,
 		connect,
 		send,
 		wake,
+		unload,
 		isLocalModel,
 		reset,
 		disconnect

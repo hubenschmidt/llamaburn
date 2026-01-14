@@ -8,12 +8,23 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize)]
 pub struct WakeRequest {
     pub model_id: String,
+    pub previous_model_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct WakeResponse {
     pub success: bool,
     pub model: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UnloadRequest {
+    pub model_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UnloadResponse {
+    pub success: bool,
 }
 
 // === WebSocket DTOs ===
@@ -27,6 +38,8 @@ pub struct WsPayload {
     pub init: bool,
     #[serde(default)]
     pub verbose: bool,
+    pub wake_model_id: Option<String>,
+    pub unload_model_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -64,6 +77,7 @@ impl fmt::Display for WsMetadata {
 pub enum WsResponse {
     Stream { on_chat_model_stream: String },
     End { on_chat_model_end: bool, metadata: Option<WsMetadata> },
+    ModelStatus { model_status: String },
 }
 
 impl WsResponse {
@@ -77,6 +91,12 @@ impl WsResponse {
         Self::End {
             on_chat_model_end: true,
             metadata: Some(metadata),
+        }
+    }
+
+    pub fn model_status(status: &str) -> Self {
+        Self::ModelStatus {
+            model_status: status.to_string(),
         }
     }
 }

@@ -28,6 +28,8 @@ export type WsPayload = {
 	model_id?: string;
 	init?: boolean;
 	verbose?: boolean;
+	wake_model_id?: string;
+	unload_model_id?: string;
 };
 
 export type WsResponse = {
@@ -35,4 +37,5 @@ export type WsResponse = {
 	on_chat_model_end?: boolean;
 	metadata?: WsMetadata;
 	models?: ModelConfig[];
+	model_status?: string;
 };
