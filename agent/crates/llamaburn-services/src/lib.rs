@@ -8,7 +8,7 @@ mod whisper;
 
 pub use benchmark::BenchmarkService;
 pub use gpu_monitor::{GpuMetrics, GpuMonitor, GpuMonitorError};
-pub use history::{BenchmarkHistoryEntry, HistoryError, HistoryFilter, HistoryService};
+pub use history::{AudioHistoryEntry, BenchmarkHistoryEntry, HistoryError, HistoryFilter, HistoryService};
 pub use model_info::{ModelInfo, ModelInfoService};
 pub use ollama::{OllamaClient, OllamaError, OllamaModelDetails, OllamaShowResponse};
 pub use settings::{keys as settings_keys, SettingsError, SettingsService};

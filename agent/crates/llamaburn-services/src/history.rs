@@ -1,5 +1,8 @@
 use llamaburn_benchmark::BenchmarkSummary;
-use llamaburn_core::{BenchmarkConfig, BenchmarkMetrics, BenchmarkType};
+use llamaburn_core::{
+    AudioBenchmarkConfig, AudioBenchmarkMetrics, AudioBenchmarkSummary, AudioMode,
+    BenchmarkConfig, BenchmarkMetrics, BenchmarkType,
+};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -33,6 +36,18 @@ pub struct BenchmarkHistoryEntry {
     pub config: BenchmarkConfig,
     pub summary: BenchmarkSummary,
     pub metrics: Vec<BenchmarkMetrics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioHistoryEntry {
+    pub id: String,
+    pub timestamp: i64,
+    pub benchmark_type: BenchmarkType,
+    pub audio_mode: AudioMode,
+    pub model_id: String,
+    pub config: AudioBenchmarkConfig,
+    pub summary: AudioBenchmarkSummary,
+    pub metrics: Vec<AudioBenchmarkMetrics>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -283,6 +298,118 @@ impl HistoryService {
         )?;
 
         let rows = stmt.query_map(params![type_str, limit], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    // --- Audio History Methods ---
+
+    /// Insert an audio benchmark result
+    pub fn insert_audio(&self, entry: &AudioHistoryEntry) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        let benchmark_type = serde_json::to_string(&entry.benchmark_type)?;
+        let audio_mode = serde_json::to_string(&entry.audio_mode)?;
+        let config_json = serde_json::to_string(&entry.config)?;
+        let summary_json = serde_json::to_string(&entry.summary)?;
+        let metrics_json = serde_json::to_string(&entry.metrics)?;
+
+        conn.execute(
+            "INSERT INTO benchmark_history (id, timestamp, benchmark_type, audio_mode, model_id, config_json, summary_json, metrics_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                entry.id,
+                entry.timestamp,
+                benchmark_type,
+                audio_mode,
+                entry.model_id,
+                config_json,
+                summary_json,
+                metrics_json,
+            ],
+        )?;
+
+        tracing::debug!("Saved audio benchmark history entry: {}", entry.id);
+        Ok(())
+    }
+
+    /// Get the best RTF for a specific model and audio mode (lower is better)
+    pub fn get_best_audio_for_model(
+        &self,
+        model_id: &str,
+        audio_mode: AudioMode,
+    ) -> Result<Option<f64>> {
+        let conn = self.conn.lock().unwrap();
+        let type_str = serde_json::to_string(&BenchmarkType::Audio)?;
+        let mode_str = serde_json::to_string(&audio_mode)?;
+
+        let result: std::result::Result<f64, _> = conn.query_row(
+            "SELECT MIN(json_extract(summary_json, '$.avg_rtf'))
+             FROM benchmark_history
+             WHERE model_id = ?1 AND benchmark_type = ?2 AND audio_mode = ?3",
+            params![model_id, type_str, mode_str],
+            |row| row.get(0),
+        );
+
+        match result {
+            Ok(rtf) => Ok(Some(rtf)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Get the all-time best RTF for an audio mode (lower is better)
+    pub fn get_all_time_best_audio(
+        &self,
+        audio_mode: AudioMode,
+    ) -> Result<Option<(String, f64)>> {
+        let conn = self.conn.lock().unwrap();
+        let type_str = serde_json::to_string(&BenchmarkType::Audio)?;
+        let mode_str = serde_json::to_string(&audio_mode)?;
+
+        let result: std::result::Result<(String, f64), _> = conn.query_row(
+            "SELECT model_id, json_extract(summary_json, '$.avg_rtf') as rtf
+             FROM benchmark_history
+             WHERE benchmark_type = ?1 AND audio_mode = ?2
+             ORDER BY rtf ASC
+             LIMIT 1",
+            params![type_str, mode_str],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        );
+
+        match result {
+            Ok(data) => Ok(Some(data)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Get audio leaderboard sorted by RTF ascending (lower is better)
+    pub fn get_audio_leaderboard(
+        &self,
+        audio_mode: AudioMode,
+        limit: u32,
+    ) -> Result<Vec<(String, f64)>> {
+        let conn = self.conn.lock().unwrap();
+        let type_str = serde_json::to_string(&BenchmarkType::Audio)?;
+        let mode_str = serde_json::to_string(&audio_mode)?;
+
+        let mut stmt = conn.prepare(
+            "SELECT model_id, MIN(json_extract(summary_json, '$.avg_rtf')) as best_rtf
+             FROM benchmark_history
+             WHERE benchmark_type = ?1 AND audio_mode = ?2
+             GROUP BY model_id
+             ORDER BY best_rtf ASC
+             LIMIT ?3",
+        )?;
+
+        let rows = stmt.query_map(params![type_str, mode_str, limit], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
         })?;
 

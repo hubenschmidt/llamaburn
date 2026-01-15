@@ -1,3 +1,4 @@
+use llamaburn_core::WhisperModel;
 use serde::Deserialize;
 use std::sync::mpsc::{channel, Receiver};
 use std::thread;
@@ -108,6 +109,35 @@ impl ModelInfoService {
             let client = OllamaClient::new(host);
             let service = ModelInfoService::new(client);
             let result = service.fetch_info(&model);
+            let _ = tx.send(result);
+        });
+
+        rx
+    }
+
+    /// Fetch model info for a Whisper model from HuggingFace
+    pub fn fetch_whisper_info(model: WhisperModel) -> Option<ModelInfo> {
+        let repo = match model {
+            WhisperModel::Tiny => "openai/whisper-tiny",
+            WhisperModel::Base => "openai/whisper-base",
+            WhisperModel::Small => "openai/whisper-small",
+            WhisperModel::Medium => "openai/whisper-medium",
+            WhisperModel::Large => "openai/whisper-large",
+            WhisperModel::LargeV3 => "openai/whisper-large-v3",
+            WhisperModel::LargeV3Turbo => "openai/whisper-large-v3-turbo",
+        };
+
+        let mut info = Self::fetch_hf_by_repo(repo)?;
+        info.model_id = model.label().to_string();
+        Some(info)
+    }
+
+    /// Async version of fetch_whisper_info
+    pub fn fetch_whisper_info_async(model: WhisperModel) -> Receiver<Option<ModelInfo>> {
+        let (tx, rx) = channel();
+
+        thread::spawn(move || {
+            let result = Self::fetch_whisper_info(model);
             let _ = tx.send(result);
         });
 

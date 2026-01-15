@@ -136,6 +136,15 @@ impl WhisperService {
         self.current_model
     }
 
+    /// Unload the currently loaded model to free memory
+    pub fn unload_model(&mut self) {
+        self.current_model = None;
+        #[cfg(feature = "whisper")]
+        {
+            self.context = None;
+        }
+    }
+
     #[cfg(feature = "whisper")]
     pub fn transcribe(&self, audio_path: &Path) -> Result<TranscriptionResult, WhisperError> {
         let (result, _) = self.transcribe_with_timing(audio_path)?;

@@ -1,6 +1,46 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Audio benchmark modes - designed for future expansion
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AudioMode {
+    #[default]
+    Stt,               // Speech-to-Text (Whisper)
+    Tts,               // Text-to-Speech
+    MusicSeparation,   // Demucs stem isolation
+    MusicTranscription,// Basic Pitch note detection
+    MusicGeneration,   // AudioCraft/MusicGen
+    LlmMusicAnalysis,  // LLM audio understanding
+}
+
+impl AudioMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            AudioMode::Stt => "STT",
+            AudioMode::Tts => "TTS",
+            AudioMode::MusicSeparation => "Music Separation",
+            AudioMode::MusicTranscription => "Music Transcription",
+            AudioMode::MusicGeneration => "Music Generation",
+            AudioMode::LlmMusicAnalysis => "LLM Music Analysis",
+        }
+    }
+
+    pub fn is_implemented(&self) -> bool {
+        matches!(self, AudioMode::Stt)
+    }
+
+    pub fn all() -> &'static [AudioMode] {
+        &[
+            AudioMode::Stt,
+            AudioMode::Tts,
+            AudioMode::MusicSeparation,
+            AudioMode::MusicTranscription,
+            AudioMode::MusicGeneration,
+            AudioMode::LlmMusicAnalysis,
+        ]
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum WhisperModel {
     Tiny,
@@ -72,7 +112,8 @@ impl WhisperModel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioBenchmarkConfig {
-    pub model_size: WhisperModel,
+    pub audio_mode: AudioMode,
+    pub model_size: Option<WhisperModel>,
     pub audio_path: PathBuf,
     pub language: Option<String>,
     pub iterations: u32,
@@ -82,7 +123,8 @@ pub struct AudioBenchmarkConfig {
 impl Default for AudioBenchmarkConfig {
     fn default() -> Self {
         Self {
-            model_size: WhisperModel::default(),
+            audio_mode: AudioMode::default(),
+            model_size: None,
             audio_path: PathBuf::new(),
             language: None,
             iterations: 3,
