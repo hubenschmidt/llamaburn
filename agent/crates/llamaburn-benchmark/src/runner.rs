@@ -14,6 +14,7 @@ pub enum BenchmarkEvent {
     Token { content: String },
     IterationComplete { metrics: BenchmarkMetrics },
     Done { summary: BenchmarkSummary },
+    Cancelled,
     Error { message: String },
 }
 
@@ -126,6 +127,7 @@ impl BenchmarkRunner {
         // Warmup runs
         for i in 0..config.warmup_runs {
             if cancel_token.is_cancelled() {
+                let _ = tx.send(BenchmarkEvent::Cancelled).await;
                 return;
             }
             let _ = tx.send(BenchmarkEvent::Warmup {
@@ -143,6 +145,7 @@ impl BenchmarkRunner {
 
         for i in 0..config.iterations {
             if cancel_token.is_cancelled() {
+                let _ = tx.send(BenchmarkEvent::Cancelled).await;
                 return;
             }
 
@@ -174,6 +177,7 @@ impl BenchmarkRunner {
 
             while let Some(chunk_result) = chunk_stream.next().await {
                 if cancel_token.is_cancelled() {
+                    let _ = tx.send(BenchmarkEvent::Cancelled).await;
                     return;
                 }
 

@@ -363,12 +363,88 @@ pub fn ComparisonTable(entries: Vec<BenchmarkHistoryEntry>) -> impl IntoView {
 2. Create comparison component
 3. Wire up "Compare Selected" button
 
+### Phase 5: Model Metadata
+
+Pull and display model information from available APIs.
+
+**Data Sources:**
+
+| Source | Endpoint | Data Available | Auth Required |
+|--------|----------|----------------|---------------|
+| Ollama | `POST /api/show` | Parameter size, quantization, family, format | No |
+| HuggingFace | `GET /api/models/{id}` | Downloads, license, architecture, tags | No (optional for rate limits) |
+
+**Ollama `/api/show` Response:**
+```json
+{
+  "modelfile": "...",
+  "parameters": "...",
+  "template": "...",
+  "details": {
+    "format": "gguf",
+    "family": "llama",
+    "parameter_size": "7B",
+    "quantization_level": "Q4_K_M"
+  }
+}
+```
+
+**HuggingFace API Response (subset):**
+```json
+{
+  "id": "meta-llama/Meta-Llama-3-8B",
+  "downloads": 1234567,
+  "license": "llama3",
+  "tags": ["text-generation", "pytorch"],
+  "library_name": "transformers"
+}
+```
+
+**Data Structure:**
+```rust
+pub struct ModelInfo {
+    pub model_id: String,
+    pub parameter_size: Option<String>,  // "7B"
+    pub quantization: Option<String>,    // "Q4_K_M"
+    pub family: Option<String>,          // "llama"
+    pub format: Option<String>,          // "gguf"
+    // HuggingFace (optional)
+    pub hf_downloads: Option<u64>,
+    pub license: Option<String>,
+}
+```
+
+**UI Display (below model selector):**
+```
+Model: llama3:7b
+├─ Size: 7B params
+├─ Quant: Q4_K_M
+├─ Family: llama
+└─ Format: gguf
+```
+
+**Implementation:**
+1. `OllamaClient::show_model()` - fetch from Ollama
+2. `ModelInfoService` - aggregate data from sources
+3. Async fetch on model selection change
+4. Cache results to avoid repeated API calls
+
+**HuggingFace Mapping Challenge:**
+Ollama model names don't directly map to HF repo names:
+- `llama3:7b` → `meta-llama/Meta-Llama-3-8B`
+- `gemma3:27b` → `google/gemma-3-27b`
+
+Options:
+1. Heuristic parsing (strip version tags, search HF)
+2. Maintain a mapping table
+3. Skip HF for non-matching models
+
 ### Future Phases (After Text is Complete)
-- Phase 5: Image benchmarking
-- Phase 6: Audio benchmarking
-- Phase 7: Video benchmarking
-- Phase 8: Code benchmarking
-- Phase 9: 3D Graphics benchmarking
+- Phase 6: Image benchmarking
+- Phase 7: Audio benchmarking
+- Phase 8: Video benchmarking
+- Phase 9: Code benchmarking
+- Phase 10: 3D Graphics benchmarking
 
 ---
 

@@ -4,8 +4,8 @@ members = [
     "crates/llamaburn-core",
     "crates/llamaburn-benchmark",
     "crates/llamaburn-cli",
-    "crates/llamaburn-web",
-    "crates/llamaburn-server",
+    "crates/llamaburn-gui",
+    "crates/llamaburn-services",
 ]
 
 [workspace.package]
@@ -18,11 +18,6 @@ license = "MIT"
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }
 
-# Web framework
-axum = { version = "0.8", features = ["ws"] }
-tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
-
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "stream"] }
 
@@ -30,32 +25,18 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# OpenAI
-async-openai = "0.27"
-
 # Error handling
 thiserror = "2.0"
 anyhow = "1.0"
-
-# Async traits
-async-trait = "0.1"
 
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Concurrent collections
-dashmap = "6.1"
-
-# Environment
-dotenvy = "0.15"
-
 # CLI
 clap = { version = "4.5", features = ["derive"] }
-
-# UUID
-uuid = { version = "1.11", features = ["v4", "serde"] }
 
 # LlamaBurn crates
 llamaburn-core = { path = "crates/llamaburn-core" }
 llamaburn-benchmark = { path = "crates/llamaburn-benchmark" }
+llamaburn-services = { path = "crates/llamaburn-services" }
