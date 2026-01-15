@@ -1,4 +1,4 @@
-# LlamaBurn 🔥
+# LlamaBurn is a work in progress 🔥
 
 A benchmarking, profiling, and stress-testing suite for local LLM models.
 
@@ -7,6 +7,8 @@ A benchmarking, profiling, and stress-testing suite for local LLM models.
 - **Accuracy evaluation** — LLM-as-Judge using Claude or GPT
 - **Local model support** — Auto-discovers Ollama models
 - **Dual interface** — Standalone CLI + Leptos web UI
+
+<img width="1898" height="1699" alt="image" src="https://github.com/user-attachments/assets/91b4fb23-edfb-4238-9961-a452c540e738" />
 
 ## CLI Usage
 
