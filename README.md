@@ -1,4 +1,4 @@
-# LlamaBurn is a work in progress 🔥
+# LlamaBurn is a work in progress
 
 A benchmarking, profiling, and stress-testing suite for local LLM models.
 
