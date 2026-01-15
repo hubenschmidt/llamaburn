@@ -6,33 +6,35 @@ A benchmarking, profiling, and stress-testing suite for local LLM models.
 - **Stress testing** — Ramp, sweep, sustained, spike modes
 - **Accuracy evaluation** — LLM-as-Judge using Claude or GPT
 - **Local model support** — Auto-discovers Ollama models
-- **Dual interface** — Standalone CLI + Leptos web UI
+- **Native GUI** — egui/eframe desktop application
 
-<img width="1898" height="1699" alt="image" src="https://github.com/user-attachments/assets/91b4fb23-edfb-4238-9961-a452c540e738" />
+## Audio Benchmarking (WORK IN PROGRESS)
 
-## CLI Usage
+Six audio benchmark modes planned:
+
+| Mode | Status | Description |
+|------|--------|-------------|
+| STT (Speech-to-Text) | Implemented | Whisper transcription with RTF metrics |
+| TTS (Text-to-Speech) | Planned | Voice synthesis benchmarking |
+| Music Separation | Planned | Demucs stem isolation |
+| Music Transcription | Planned | Basic Pitch note detection |
+| Music Generation | Planned | AudioCraft/MusicGen |
+| LLM Music Analysis | Planned | Audio understanding via LLM |
+
+### Building with Whisper (ROCm GPU)
 
 ```bash
-# Build the CLI
-cd agent && cargo build --release -p llamaburn-cli
+# Install build deps
+sudo apt install cmake clang
 
-# List available models
-llamaburn models
+# Build with GPU acceleration (AMD ROCm)
+cargo build -p llamaburn-gui --features whisper-gpu
 
-# Run benchmark
-llamaburn benchmark llama3.1:8b --iterations 5
-
-# Show system status
-llamaburn status
+# CPU-only build
+cargo build -p llamaburn-gui --features whisper
 ```
 
-### Commands
-
-| Command | Description |
-|---------|-------------|
-| `models` | List available Ollama models |
-| `benchmark` | Run benchmark tests on a model |
-| `status` | Show system status |
+Models download to `~/.local/share/llamaburn/whisper/`
 
 ### Benchmark Options
 
@@ -72,84 +74,79 @@ Summary:
   Avg Total: 1,463.7 ms
 ```
 
+## CLI Usage
+
+```bash
+# Build the CLI
+cd agent && cargo build --release -p llamaburn-cli
+
+# List available models
+llamaburn models
+
+# Run benchmark
+llamaburn benchmark llama3.1:8b --iterations 5
+
+# Show system status
+llamaburn status
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `models` | List available Ollama models |
+| `benchmark` | Run benchmark tests on a model |
+| `status` | Show system status |
+
+
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│              CLI (llamaburn)                │
-│           Rust binary, standalone           │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────┴──────────────────────────┐
-│           Shared Core Crates                │
-│  - benchmark, stress, eval, profiler        │
-│  - multi-modal processors                   │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────┴──────────────────────────┐
-│         Web UI (Leptos → WASM)              │
-│  - Real-time charts                         │
-│  - Model comparison                         │
-│  - Export results                           │
-└─────────────────────────────────────────────┘
-```
-
-## Project Structure
-
-```
-.
-├── agent/
-│   └── crates/
-│       ├── llamaburn-core/       # Shared types, config
-│       ├── llamaburn-benchmark/  # Performance benchmarks
-│       ├── llamaburn-cli/        # CLI binary
-│       └── llamaburn-web/        # Leptos frontend
-├── spec/
-│   └── SPEC.md                   # Full specification
-└── docker-compose.yml
-```
-
-## Using Docker
-
-Build and start the application:
-
-```bash
-docker compose up
-```
-
-The CLI starts automatically. Attach to the interactive CLI:
-
-```bash
-docker attach llamaburn-cli-1
-```
-
-Use the interactive commands:
-
-```
-help                    Show available commands
-models, m               List available Ollama models
-benchmark, b <model>    Run benchmark (e.g., `b llama3.1:8b -i 3`)
-status, s               Show system status
-clear                   Clear screen
-exit, quit, q           Exit the application
+┌───────────────────────────────────────────────────────────┐
+│                    llamaburn-gui                          │
+│                  (egui/eframe desktop)                    │
+├───────────────────────────────────────────────────────────┤
+│  Panels: Benchmark │ History │ Stress │ Eval │ Settings  │
+└─────────────┬─────────────────────────────┬───────────────┘
+              │                             │
+┌─────────────┴─────────────┐ ┌─────────────┴───────────────┐
+│   llamaburn-benchmark     │ │     llamaburn-services      │
+│   - Text/Audio runners    │ │   - OllamaClient (HTTP)     │
+│   - Metrics collection    │ │   - WhisperService (STT)    │
+└─────────────┬─────────────┘ │   - HistoryService (SQLite) │
+              │               └─────────────┬───────────────┘
+┌─────────────┴─────────────────────────────┴───────────────┐
+│                     llamaburn-core                        │
+│            Types, config, benchmark definitions           │
+└───────────────────────────────────────────────────────────┘
+              │                             │
+       ┌──────┴──────┐               ┌──────┴──────┐
+       │   Ollama    │               │   Whisper   │
+       │ (localhost) │               │ (whisper-rs)│
+       └─────────────┘               └─────────────┘
 ```
 
 ## Prerequisites
 
-- Docker & Docker Compose
-- [Ollama](https://ollama.ai) running on host with models installed
+- [Ollama](https://ollama.ai) running with models installed
 
 ```bash
 ollama pull llama3.1:8b
 ollama serve
 ```
 
-## Native Build (Alternative)
+## Building the GUI
 
 ```bash
 cd agent
-cargo build --release -p llamaburn-cli
-./target/release/llamaburn
+cargo build --release -p llamaburn-gui
+./target/release/llamaburn-gui
+```
+
+For development with hot reload:
+
+```bash
+cargo watch -x 'run -p llamaburn-gui'
 ```
 
 ## Metrics
@@ -162,11 +159,21 @@ cargo build --release -p llamaburn-cli
 | **ISL** | Input sequence length |
 | **OSL** | Output sequence length |
 
+
+
 ## Troubleshooting
 
-### Models not loading in Docker
+### Ollama connection issues
 
-If the benchmark runner shows "EOF while parsing" or can't list models, Ollama may be bound to localhost only. Configure it to accept connections from Docker:
+If models aren't loading, ensure Ollama is running:
+
+```bash
+curl http://localhost:11434/api/tags
+```
+
+### Ollama bound to localhost only
+
+If running Ollama on a different machine, configure it to accept external connections:
 
 ```bash
 sudo mkdir -p /etc/systemd/system/ollama.service.d
