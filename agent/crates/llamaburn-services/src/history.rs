@@ -23,6 +23,8 @@ pub enum HistoryError {
     Io(#[from] std::io::Error),
     #[error("Migration error: {0}")]
     Migration(#[from] refinery::Error),
+    #[error("Lock poisoned")]
+    LockPoisoned,
 }
 
 pub type Result<T> = std::result::Result<T, HistoryError>;
@@ -88,7 +90,7 @@ impl HistoryService {
 
     /// Reset the database by dropping all tables and re-running migrations
     pub fn reset_database(&self) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
 
         // Drop all tables
         conn.execute("DROP TABLE IF EXISTS benchmark_history", [])?;
@@ -103,7 +105,7 @@ impl HistoryService {
     }
 
     pub fn insert(&self, entry: &BenchmarkHistoryEntry) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
 
         let benchmark_type = serde_json::to_string(&entry.benchmark_type)?;
         let config_json = serde_json::to_string(&entry.config)?;
@@ -129,7 +131,7 @@ impl HistoryService {
     }
 
     pub fn list(&self, filter: HistoryFilter) -> Result<Vec<BenchmarkHistoryEntry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
 
         let mut sql = String::from(
             "SELECT id, timestamp, benchmark_type, model_id, config_json, summary_json, metrics_json
@@ -190,7 +192,7 @@ impl HistoryService {
     }
 
     pub fn get(&self, id: &str) -> Result<Option<BenchmarkHistoryEntry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
 
         let mut stmt = conn.prepare(
             "SELECT id, timestamp, benchmark_type, model_id, config_json, summary_json, metrics_json
@@ -217,14 +219,14 @@ impl HistoryService {
     }
 
     pub fn delete(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
         conn.execute("DELETE FROM benchmark_history WHERE id = ?1", params![id])?;
         tracing::debug!("Deleted benchmark history entry: {}", id);
         Ok(())
     }
 
     pub fn clear_all(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
         conn.execute("DELETE FROM benchmark_history", [])?;
         tracing::info!("Cleared all benchmark history");
         Ok(())
@@ -236,7 +238,7 @@ impl HistoryService {
         model_id: &str,
         benchmark_type: BenchmarkType,
     ) -> Result<Option<f64>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
         let type_str = serde_json::to_string(&benchmark_type)?;
 
         let result: std::result::Result<f64, _> = conn.query_row(
@@ -259,7 +261,7 @@ impl HistoryService {
         &self,
         benchmark_type: BenchmarkType,
     ) -> Result<Option<(String, f64)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
         let type_str = serde_json::to_string(&benchmark_type)?;
 
         let result: std::result::Result<(String, f64), _> = conn.query_row(
@@ -285,7 +287,7 @@ impl HistoryService {
         benchmark_type: BenchmarkType,
         limit: u32,
     ) -> Result<Vec<(String, f64)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
         let type_str = serde_json::to_string(&benchmark_type)?;
 
         let mut stmt = conn.prepare(
@@ -312,7 +314,7 @@ impl HistoryService {
 
     /// Insert an audio benchmark result
     pub fn insert_audio(&self, entry: &AudioHistoryEntry) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
 
         let benchmark_type = serde_json::to_string(&entry.benchmark_type)?;
         let audio_mode = serde_json::to_string(&entry.audio_mode)?;
@@ -345,7 +347,7 @@ impl HistoryService {
         model_id: &str,
         audio_mode: AudioMode,
     ) -> Result<Option<f64>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
         let type_str = serde_json::to_string(&BenchmarkType::Audio)?;
         let mode_str = serde_json::to_string(&audio_mode)?;
 
@@ -369,7 +371,7 @@ impl HistoryService {
         &self,
         audio_mode: AudioMode,
     ) -> Result<Option<(String, f64)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
         let type_str = serde_json::to_string(&BenchmarkType::Audio)?;
         let mode_str = serde_json::to_string(&audio_mode)?;
 
@@ -396,7 +398,7 @@ impl HistoryService {
         audio_mode: AudioMode,
         limit: u32,
     ) -> Result<Vec<(String, f64)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
         let type_str = serde_json::to_string(&BenchmarkType::Audio)?;
         let mode_str = serde_json::to_string(&audio_mode)?;
 

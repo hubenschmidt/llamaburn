@@ -1,8 +1,12 @@
-use serde::{Deserialize, Serialize};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, error, info, instrument};
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Error, Debug)]
 pub enum OllamaError {
@@ -75,16 +79,10 @@ impl OllamaClient {
         let url = format!("{}/api/tags", self.host);
         debug!("Fetching models from Ollama API");
 
-        let response = ureq::get(&url).call().map_err(|e| {
-            if let ureq::Error::Transport(t) = &e {
-                if t.kind() == ureq::ErrorKind::ConnectionFailed {
-                    error!("Connection refused - Ollama not running?");
-                    return OllamaError::ConnectionRefused;
-                }
-            }
-            error!("HTTP error: {}", e);
-            OllamaError::Http(e)
-        })?;
+        let response = ureq::get(&url)
+            .timeout(REQUEST_TIMEOUT)
+            .call()
+            .map_err(|e| map_ureq_error(e, "Connection refused - Ollama not running?"))?;
 
         let tags: TagsResponse = response.into_json()?;
         info!(count = tags.models.len(), "Fetched models from Ollama");
@@ -144,14 +142,10 @@ impl OllamaClient {
             name: model_id.to_string(),
         };
 
-        let response = ureq::post(&url).send_json(&request).map_err(|e| {
-            if let ureq::Error::Transport(t) = &e {
-                if t.kind() == ureq::ErrorKind::ConnectionFailed {
-                    return OllamaError::ConnectionRefused;
-                }
-            }
-            OllamaError::Http(e)
-        })?;
+        let response = ureq::post(&url)
+            .timeout(REQUEST_TIMEOUT)
+            .send_json(&request)
+            .map_err(|e| map_ureq_error(e, "Connection refused"))?;
 
         let show_response: OllamaShowResponse = response.into_json()?;
         info!(model = model_id, "Fetched model details");
@@ -186,14 +180,10 @@ impl OllamaClient {
             keep_alive: 0,
         };
 
-        ureq::post(&url).send_json(&request).map_err(|e| {
-            if let ureq::Error::Transport(t) = &e {
-                if t.kind() == ureq::ErrorKind::ConnectionFailed {
-                    return OllamaError::ConnectionRefused;
-                }
-            }
-            OllamaError::Http(e)
-        })?;
+        ureq::post(&url)
+            .timeout(REQUEST_TIMEOUT)
+            .send_json(&request)
+            .map_err(|e| map_ureq_error(e, "Connection refused"))?;
 
         info!(model = model_id, "Model unloaded");
         Ok(())
@@ -220,4 +210,20 @@ impl Default for OllamaClient {
     fn default() -> Self {
         Self::default_host()
     }
+}
+
+/// Map ureq errors to OllamaError, detecting connection failures
+fn map_ureq_error(e: ureq::Error, context: &str) -> OllamaError {
+    let ureq::Error::Transport(ref t) = e else {
+        error!("HTTP error: {}", e);
+        return OllamaError::Http(e);
+    };
+
+    if t.kind() == ureq::ErrorKind::ConnectionFailed {
+        error!("{}", context);
+        return OllamaError::ConnectionRefused;
+    }
+
+    error!("HTTP error: {}", e);
+    OllamaError::Http(e)
 }

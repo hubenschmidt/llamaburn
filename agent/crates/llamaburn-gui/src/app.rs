@@ -1,6 +1,7 @@
+use std::sync::Arc;
+
 use eframe::egui;
 use llamaburn_services::HistoryService;
-use std::sync::Arc;
 
 use crate::panels::{
     benchmark::BenchmarkPanel, gpu_monitor::GpuMonitorPanel, history::HistoryPanel,

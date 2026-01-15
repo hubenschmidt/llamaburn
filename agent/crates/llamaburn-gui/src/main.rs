@@ -1,9 +1,10 @@
 mod app;
 mod panels;
 
-use app::LlamaBurnApp;
 use eframe::egui;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+use app::LlamaBurnApp;
 
 fn main() -> eframe::Result<()> {
     // Set up file logging to /tmp/llamaburn.log

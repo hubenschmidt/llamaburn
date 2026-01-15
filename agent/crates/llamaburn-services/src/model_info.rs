@@ -1,8 +1,10 @@
-use llamaburn_core::WhisperModel;
-use serde::Deserialize;
 use std::sync::mpsc::{channel, Receiver};
 use std::thread;
+
+use serde::Deserialize;
 use tracing::debug;
+
+use llamaburn_core::WhisperModel;
 
 use crate::{OllamaClient, OllamaShowResponse};
 

@@ -6,6 +6,8 @@ use thiserror::Error;
 pub enum SettingsError {
     #[error("Database error: {0}")]
     Database(#[from] rusqlite::Error),
+    #[error("Lock poisoned")]
+    LockPoisoned,
 }
 
 pub type Result<T> = std::result::Result<T, SettingsError>;
@@ -23,7 +25,7 @@ impl SettingsService {
 
     /// Get a setting value by key
     pub fn get(&self, key: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| SettingsError::LockPoisoned)?;
 
         let result: std::result::Result<String, _> = conn.query_row(
             "SELECT value FROM settings WHERE key = ?1",
@@ -40,7 +42,7 @@ impl SettingsService {
 
     /// Set a setting value (insert or update)
     pub fn set(&self, key: &str, value: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| SettingsError::LockPoisoned)?;
 
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?1, ?2)
@@ -54,7 +56,7 @@ impl SettingsService {
 
     /// Delete a setting by key
     pub fn delete(&self, key: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| SettingsError::LockPoisoned)?;
         conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
         tracing::debug!("Setting deleted: {}", key);
         Ok(())
@@ -62,7 +64,7 @@ impl SettingsService {
 
     /// List all settings
     pub fn list(&self) -> Result<Vec<(String, String)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| SettingsError::LockPoisoned)?;
 
         let mut stmt = conn.prepare("SELECT key, value FROM settings ORDER BY key")?;
         let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;

@@ -1,5 +1,6 @@
-use crate::BenchmarkType;
 use serde::{Deserialize, Serialize};
+
+use crate::BenchmarkType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlamaBurnConfig {

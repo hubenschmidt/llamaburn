@@ -5,16 +5,17 @@
 //!
 //! Install system dependencies: `sudo apt install cmake clang`
 
-use llamaburn_core::{AudioBenchmarkMetrics, WhisperModel};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
-use thiserror::Error;
-
 #[cfg(feature = "whisper")]
 use std::time::Instant;
+
+use thiserror::Error;
 #[cfg(feature = "whisper")]
 use tracing::{debug, info, warn};
+
+use llamaburn_core::{AudioBenchmarkMetrics, WhisperModel};
 
 #[derive(Error, Debug)]
 pub enum WhisperError {

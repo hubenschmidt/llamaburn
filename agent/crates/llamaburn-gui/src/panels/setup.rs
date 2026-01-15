@@ -1,6 +1,7 @@
+use std::sync::Arc;
+
 use eframe::egui;
 use llamaburn_services::{settings_keys, HistoryService, SettingsService};
-use std::sync::Arc;
 
 pub struct SetupPanel {
     settings_service: SettingsService,

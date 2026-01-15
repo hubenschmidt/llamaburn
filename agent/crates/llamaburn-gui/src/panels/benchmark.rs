@@ -1,4 +1,12 @@
+use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use eframe::egui;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, warn};
+
 use llamaburn_core::{
     AudioBenchmarkConfig, AudioBenchmarkResult, AudioMode, BenchmarkConfig, BenchmarkMetrics,
     BenchmarkType, WhisperModel,
@@ -8,12 +16,6 @@ use llamaburn_services::{
     BenchmarkService, BenchmarkSummary, HistoryService, ModelInfo, ModelInfoService, OllamaClient,
     OllamaError, WhisperService,
 };
-use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
 
 pub struct BenchmarkPanel {
     // Model selection
@@ -425,14 +427,11 @@ impl BenchmarkPanel {
                 ui.label("Model:");
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(!disabled, |ui| {
-                        let selected_text = if self.loading_models {
-                            "Loading models..."
-                        } else if self.models.is_empty() {
-                            "No models found"
-                        } else if self.selected_model.is_empty() {
-                            "Select model..."
-                        } else {
-                            &self.selected_model
+                        let selected_text = match (self.loading_models, self.models.is_empty(), self.selected_model.is_empty()) {
+                            (true, _, _) => "Loading models...",
+                            (_, true, _) => "No models found",
+                            (_, _, true) => "Select model...",
+                            _ => &self.selected_model,
                         };
 
                         egui::ComboBox::from_id_salt("model_select")
@@ -741,9 +740,18 @@ impl BenchmarkPanel {
 
             // Redirect stderr to our pipe
             let old_stderr = unsafe { libc::dup(2) };
-            unsafe {
+            if old_stderr == -1 {
+                let _ = tx.send(AudioBenchmarkEvent::Error("Failed to dup stderr".into()));
+                return;
+            }
+            let dup2_result = unsafe {
                 use std::os::fd::AsRawFd;
-                libc::dup2(stderr_write.as_raw_fd(), 2);
+                libc::dup2(stderr_write.as_raw_fd(), 2)
+            };
+            if dup2_result == -1 {
+                unsafe { libc::close(old_stderr) };
+                let _ = tx.send(AudioBenchmarkEvent::Error("Failed to redirect stderr".into()));
+                return;
             }
             drop(stderr_write); // Close write end in this thread
 
