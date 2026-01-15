@@ -14,6 +14,39 @@ sudo apt install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
 sudo dnf install libxcb-devel libxkbcommon-devel mesa-libGL-devel wayland-devel
 ```
 
+## Audio Benchmarking (Whisper STT)
+
+Audio transcription requires additional build dependencies:
+
+```bash
+# Required for whisper-rs
+sudo apt install cmake clang
+```
+
+### Build with GPU Support (ROCm)
+
+For AMD GPUs (7900 XT, etc.) with ROCm:
+
+```bash
+cd agent
+
+# Release build with ROCm GPU acceleration
+cargo build --release -p llamaburn-gui --features whisper-gpu
+```
+
+### Build with CPU Only
+
+```bash
+cargo build --release -p llamaburn-gui --features whisper
+```
+
+### Feature Flags
+
+| Feature | Description |
+|---------|-------------|
+| `whisper` | CPU-only Whisper transcription |
+| `whisper-gpu` | ROCm GPU-accelerated (hipBLAS) |
+
 ## Development (Hot Reload)
 
 ```bash
@@ -22,8 +55,11 @@ cd agent
 # Install cargo-watch (once)
 cargo install cargo-watch
 
-# Run with hot reload - rebuilds on file change
+# Run with hot reload (no audio)
 cargo watch -x 'run -p llamaburn-gui'
+
+# Run with hot reload + GPU audio
+cargo watch -x 'run -p llamaburn-gui --features whisper-gpu'
 ```
 
 Changes to any `.rs` file trigger automatic rebuild (~1-2s incremental).

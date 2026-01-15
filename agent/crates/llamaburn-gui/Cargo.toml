@@ -44,3 +44,9 @@ llamaburn-benchmark = { workspace = true }
 # Utilities
 uuid = { version = "1.0", features = ["v4"] }
 open = "5"
+rfd = "0.14"
+
+[features]
+default = []
+whisper = ["llamaburn-services/whisper"]
+whisper-gpu = ["llamaburn-services/whisper-gpu"]

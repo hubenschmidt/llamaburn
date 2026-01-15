@@ -24,7 +24,7 @@ impl BenchmarkType {
     }
 
     pub fn is_implemented(&self) -> bool {
-        matches!(self, BenchmarkType::Text)
+        matches!(self, BenchmarkType::Text | BenchmarkType::Audio)
     }
 
     pub fn all() -> &'static [BenchmarkType] {

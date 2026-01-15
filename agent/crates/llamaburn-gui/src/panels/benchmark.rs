@@ -1,9 +1,14 @@
 use eframe::egui;
-use llamaburn_core::{BenchmarkConfig, BenchmarkMetrics, BenchmarkType};
-use llamaburn_services::{
-    BenchmarkEvent, BenchmarkHistoryEntry, BenchmarkService, BenchmarkSummary, HistoryService,
-    ModelInfo, ModelInfoService, OllamaClient, OllamaError,
+use llamaburn_core::{
+    AudioBenchmarkConfig, AudioBenchmarkResult, BenchmarkConfig, BenchmarkMetrics, BenchmarkType,
+    WhisperModel,
 };
+use llamaburn_services::{
+    get_audio_duration_ms, BenchmarkEvent, BenchmarkHistoryEntry, BenchmarkService,
+    BenchmarkSummary, HistoryService, ModelInfo, ModelInfoService, OllamaClient, OllamaError,
+    WhisperService,
+};
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -52,6 +57,13 @@ pub struct BenchmarkPanel {
     progress: String,
     result: Option<BenchmarkSummary>,
     error: Option<String>,
+
+    // Audio benchmark state
+    audio_file_path: Option<PathBuf>,
+    audio_duration_ms: Option<f64>,
+    whisper_model: WhisperModel,
+    whisper_service: WhisperService,
+    audio_result: Option<AudioBenchmarkResult>,
 }
 
 impl BenchmarkPanel {
@@ -88,6 +100,12 @@ impl BenchmarkPanel {
             progress: String::new(),
             result: None,
             error: None,
+            // Audio
+            audio_file_path: None,
+            audio_duration_ms: None,
+            whisper_model: WhisperModel::default(),
+            whisper_service: WhisperService::default(),
+            audio_result: None,
         }
     }
 
@@ -263,6 +281,15 @@ impl BenchmarkPanel {
     }
 
     fn render_config(&mut self, ui: &mut egui::Ui) {
+        if self.benchmark_type == BenchmarkType::Audio {
+            self.render_audio_config(ui);
+            return;
+        }
+
+        self.render_text_config(ui);
+    }
+
+    fn render_text_config(&mut self, ui: &mut egui::Ui) {
         let disabled = self.running || self.loading_models;
 
         egui::Grid::new("config_grid")
@@ -356,6 +383,208 @@ impl BenchmarkPanel {
                 ui.spinner();
             }
         });
+    }
+
+    fn render_audio_config(&mut self, ui: &mut egui::Ui) {
+        let disabled = self.running;
+
+        egui::Grid::new("audio_config_grid")
+            .num_columns(2)
+            .spacing([10.0, 8.0])
+            .show(ui, |ui| {
+                // Whisper model selector
+                ui.label("Model:");
+                ui.add_enabled_ui(!disabled, |ui| {
+                    egui::ComboBox::from_id_salt("whisper_model")
+                        .selected_text(self.whisper_model.label())
+                        .show_ui(ui, |ui| {
+                            for model in WhisperModel::all() {
+                                let label = format!("{} (~{}MB)", model.label(), model.size_mb());
+                                ui.selectable_value(&mut self.whisper_model, *model, label);
+                            }
+                        });
+                });
+                ui.end_row();
+
+                // Audio file picker
+                ui.label("Audio:");
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(!disabled, egui::Button::new("Select File...")).clicked() {
+                        self.pick_audio_file();
+                    }
+
+                    if let Some(path) = &self.audio_file_path {
+                        let filename = path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown");
+                        ui.label(filename);
+                    }
+                });
+                ui.end_row();
+
+                // Show duration if file selected
+                if let Some(duration_ms) = self.audio_duration_ms {
+                    ui.label("Duration:");
+                    ui.label(format!("{:.1}s", duration_ms / 1000.0));
+                    ui.end_row();
+                }
+
+                // Model download status
+                ui.label("Status:");
+                let downloaded = self.whisper_service.is_model_downloaded(self.whisper_model);
+                if downloaded {
+                    ui.colored_label(egui::Color32::GREEN, "Model ready");
+                } else {
+                    ui.colored_label(egui::Color32::YELLOW, "Model not downloaded");
+                }
+                ui.end_row();
+
+                ui.label("Iterations:");
+                ui.add_enabled(!disabled, egui::DragValue::new(&mut self.iterations).range(1..=20));
+                ui.end_row();
+
+                ui.label("Warmup:");
+                ui.add_enabled(!disabled, egui::DragValue::new(&mut self.warmup).range(0..=5));
+                ui.end_row();
+            });
+
+        ui.add_space(10.0);
+
+        // Whisper feature check
+        if !WhisperService::is_whisper_enabled() {
+            ui.colored_label(
+                egui::Color32::RED,
+                "Whisper not enabled. Build with --features whisper-gpu",
+            );
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            let can_run = !self.running
+                && self.audio_file_path.is_some()
+                && self.whisper_service.is_model_downloaded(self.whisper_model);
+
+            if ui.add_enabled(can_run, egui::Button::new("Run Audio Benchmark")).clicked() {
+                self.start_audio_benchmark();
+            }
+
+            let model_exists = self.whisper_service.is_model_downloaded(self.whisper_model);
+            if !model_exists && !self.running {
+                if ui.button("Download Model").clicked() {
+                    self.download_whisper_model();
+                }
+            }
+
+            if self.running {
+                if ui.button("Cancel").clicked() {
+                    self.cancel_benchmark();
+                }
+                ui.spinner();
+            }
+        });
+
+        // Show audio results if available
+        if let Some(result) = &self.audio_result {
+            ui.add_space(10.0);
+            ui.separator();
+            ui.label(egui::RichText::new("Audio Results").strong());
+            ui.label(format!("Avg RTF: {:.3}x", result.summary.avg_rtf));
+            ui.label(format!("Avg Time: {:.0}ms", result.summary.avg_processing_ms));
+
+            if let Some(first) = result.metrics.first() {
+                ui.add_space(5.0);
+                ui.label("Transcription:");
+                let preview = if first.transcription.len() > 200 {
+                    format!("{}...", &first.transcription[..200])
+                } else {
+                    first.transcription.clone()
+                };
+                ui.label(egui::RichText::new(preview).small().italics());
+            }
+        }
+    }
+
+    fn pick_audio_file(&mut self) {
+        let file = rfd::FileDialog::new()
+            .add_filter("Audio", &["wav", "mp3", "flac", "m4a", "ogg"])
+            .pick_file();
+
+        let Some(path) = file else { return };
+
+        // Get duration
+        match get_audio_duration_ms(&path) {
+            Ok(duration) => {
+                self.audio_duration_ms = Some(duration);
+                self.audio_file_path = Some(path);
+                self.error = None;
+            }
+            Err(e) => {
+                self.error = Some(format!("Failed to read audio: {}", e));
+            }
+        }
+    }
+
+    fn start_audio_benchmark(&mut self) {
+        let Some(audio_path) = &self.audio_file_path else { return };
+
+        info!("Starting audio benchmark: {:?}", audio_path);
+
+        self.running = true;
+        self.error = None;
+        self.audio_result = None;
+        self.live_output.clear();
+        self.progress = "Loading model...".to_string();
+
+        // Run benchmark synchronously for now (whisper-rs is blocking)
+        let result = self.whisper_service.run_benchmark(
+            self.whisper_model,
+            audio_path,
+            self.iterations,
+            self.warmup,
+            None,
+        );
+
+        match result {
+            Ok(metrics) => {
+                let summary = AudioBenchmarkResult::calculate_summary(&metrics);
+                self.audio_result = Some(AudioBenchmarkResult {
+                    config: AudioBenchmarkConfig {
+                        model_size: self.whisper_model,
+                        audio_path: audio_path.clone(),
+                        language: None,
+                        iterations: self.iterations,
+                        warmup_runs: self.warmup,
+                    },
+                    metrics,
+                    summary,
+                });
+                self.progress = "Complete".to_string();
+                info!("Audio benchmark complete");
+            }
+            Err(e) => {
+                self.error = Some(format!("Benchmark failed: {}", e));
+                self.progress = "Error".to_string();
+            }
+        }
+
+        self.running = false;
+    }
+
+    fn download_whisper_model(&mut self) {
+        let model = self.whisper_model;
+        let url = model.download_url();
+        let path = self.whisper_service.model_path(model);
+
+        info!("Opening download URL: {}", url);
+        self.live_output = format!(
+            "Download {} from:\n{}\n\nSave to:\n{}",
+            model.label(),
+            url,
+            path.display()
+        );
+
+        // Open URL in browser
+        let _ = open::that(&url);
     }
 
     fn render_live_output(&self, ui: &mut egui::Ui) {
