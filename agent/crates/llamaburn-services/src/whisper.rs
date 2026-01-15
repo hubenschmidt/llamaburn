@@ -375,28 +375,35 @@ impl WhisperService {
 
     #[cfg(feature = "whisper")]
     fn resample(&self, input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, WhisperError> {
-        use rubato::{FftFixedInOut, Resampler};
+        use rubato::{FftFixedIn, Resampler};
 
-        let resample_ratio = to_rate as f64 / from_rate as f64;
         let chunk_size = 1024;
 
-        let mut resampler = FftFixedInOut::<f32>::new(from_rate as usize, to_rate as usize, chunk_size, 1)
+        let mut resampler = FftFixedIn::<f32>::new(from_rate as usize, to_rate as usize, chunk_size, 2, 1)
             .map_err(|e| WhisperError::AudioLoadError(format!("Resampler init failed: {}", e)))?;
 
         let mut output = Vec::new();
+        let mut pos = 0;
 
-        for chunk in input.chunks(chunk_size) {
-            let padded = self.pad_chunk(chunk, chunk_size);
+        while pos < input.len() {
+            let end = (pos + chunk_size).min(input.len());
+            let chunk = &input[pos..end];
+
+            // Pad if needed
+            let padded: Vec<f32> = if chunk.len() < chunk_size {
+                let mut p = chunk.to_vec();
+                p.resize(chunk_size, 0.0);
+                p
+            } else {
+                chunk.to_vec()
+            };
+
             let resampled = resampler
                 .process(&[padded], None)
                 .map_err(|e| WhisperError::AudioLoadError(format!("Resample failed: {}", e)))?;
 
-            let take = if chunk.len() < chunk_size {
-                (chunk.len() as f64 * resample_ratio).ceil() as usize
-            } else {
-                resampled[0].len()
-            };
-            output.extend(&resampled[0][..take.min(resampled[0].len())]);
+            output.extend(&resampled[0]);
+            pos += chunk_size;
         }
 
         debug!(
@@ -405,17 +412,6 @@ impl WhisperService {
         );
 
         Ok(output)
-    }
-
-    #[cfg(feature = "whisper")]
-    fn pad_chunk(&self, chunk: &[f32], target_size: usize) -> Vec<f32> {
-        if chunk.len() >= target_size {
-            return chunk.to_vec();
-        }
-
-        let mut padded = chunk.to_vec();
-        padded.resize(target_size, 0.0);
-        padded
     }
 
     #[cfg(feature = "whisper")]
