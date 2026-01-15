@@ -41,6 +41,37 @@ impl AudioMode {
     }
 }
 
+/// Audio source for STT benchmarking
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AudioSource {
+    /// Load from file (default behavior)
+    #[default]
+    File,
+    /// Record for fixed duration, then benchmark
+    Capture {
+        device_id: String,
+        duration_secs: u32,
+    },
+    /// Stream live to Whisper in real-time
+    LiveStream {
+        device_id: String,
+    },
+}
+
+impl AudioSource {
+    pub fn label(&self) -> &'static str {
+        match self {
+            AudioSource::File => "File",
+            AudioSource::Capture { .. } => "Capture",
+            AudioSource::LiveStream { .. } => "Live Stream",
+        }
+    }
+
+    pub fn is_recording(&self) -> bool {
+        !matches!(self, AudioSource::File)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum WhisperModel {
     Tiny,
@@ -113,6 +144,7 @@ impl WhisperModel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioBenchmarkConfig {
     pub audio_mode: AudioMode,
+    pub audio_source: AudioSource,
     pub model_size: Option<WhisperModel>,
     pub audio_path: PathBuf,
     pub language: Option<String>,
@@ -124,6 +156,7 @@ impl Default for AudioBenchmarkConfig {
     fn default() -> Self {
         Self {
             audio_mode: AudioMode::default(),
+            audio_source: AudioSource::default(),
             model_size: None,
             audio_path: PathBuf::new(),
             language: None,

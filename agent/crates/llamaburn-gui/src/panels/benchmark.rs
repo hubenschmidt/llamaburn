@@ -8,14 +8,33 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use llamaburn_core::{
-    AudioBenchmarkConfig, AudioBenchmarkResult, AudioMode, BenchmarkConfig, BenchmarkMetrics,
-    BenchmarkType, WhisperModel,
+    AudioBenchmarkConfig, AudioBenchmarkResult, AudioMode, AudioSource, BenchmarkConfig,
+    BenchmarkMetrics, BenchmarkType, WhisperModel,
 };
 use llamaburn_services::{
     get_audio_duration_ms, AudioHistoryEntry, BenchmarkEvent, BenchmarkHistoryEntry,
     BenchmarkService, BenchmarkSummary, HistoryService, ModelInfo, ModelInfoService, OllamaClient,
     OllamaError, WhisperService,
 };
+
+/// UI-level audio source mode (simpler than AudioSource for UI state)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AudioSourceMode {
+    #[default]
+    File,
+    Capture,
+    LiveStream,
+}
+
+impl AudioSourceMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            AudioSourceMode::File => "File",
+            AudioSourceMode::Capture => "Capture",
+            AudioSourceMode::LiveStream => "Live",
+        }
+    }
+}
 
 pub struct BenchmarkPanel {
     // Model selection
@@ -69,6 +88,15 @@ pub struct BenchmarkPanel {
     audio_rx: Option<Receiver<AudioBenchmarkEvent>>,
     last_whisper_model_for_info: Option<WhisperModel>,
     audio_model_info_rx: Option<Receiver<Option<ModelInfo>>>,
+
+    // Audio recording state (requires audio-input feature)
+    audio_source_mode: AudioSourceMode,
+    #[cfg(feature = "audio-input")]
+    audio_devices: Vec<llamaburn_services::AudioDevice>,
+    selected_device_id: Option<String>,
+    capture_duration_secs: u32,
+    #[cfg(feature = "audio-input")]
+    loading_devices: bool,
 
     // Audio rankings
     model_best_rtf: Option<f64>,
@@ -128,6 +156,14 @@ impl BenchmarkPanel {
             audio_rx: None,
             last_whisper_model_for_info: None,
             audio_model_info_rx: None,
+            // Audio recording
+            audio_source_mode: AudioSourceMode::default(),
+            #[cfg(feature = "audio-input")]
+            audio_devices: Vec::new(),
+            selected_device_id: None,
+            capture_duration_secs: 10,
+            #[cfg(feature = "audio-input")]
+            loading_devices: false,
             // Audio rankings
             model_best_rtf: None,
             all_time_best_audio: None,
@@ -271,6 +307,7 @@ impl BenchmarkPanel {
                     let result = AudioBenchmarkResult {
                         config: AudioBenchmarkConfig {
                             audio_mode: AudioMode::Stt,
+                            audio_source: AudioSource::File,
                             model_size: self.whisper_model,
                             audio_path: self.audio_file_path.clone().unwrap_or_default(),
                             language: None,
@@ -513,6 +550,38 @@ impl BenchmarkPanel {
     fn render_audio_config(&mut self, ui: &mut egui::Ui) {
         let disabled = self.running;
 
+        // Audio Setup dropdown button (Audacity-style)
+        #[cfg(feature = "audio-input")]
+        {
+            // Auto-load devices on first render
+            if self.audio_devices.is_empty() && !self.loading_devices {
+                self.refresh_audio_devices();
+            }
+
+            ui.horizontal(|ui| {
+                let button_text = self.selected_device_id
+                    .as_ref()
+                    .and_then(|id| self.audio_devices.iter().find(|d| &d.id == id))
+                    .map(|d| {
+                        // Show friendly card name if available
+                        let display_name = d.card_name.as_ref().unwrap_or(&d.name);
+                        format!("🔊 {}", display_name)
+                    })
+                    .unwrap_or_else(|| "🔊 Audio Setup".to_string());
+
+                ui.add_enabled_ui(!disabled, |ui| {
+                    ui.menu_button(button_text, |ui| {
+                        self.render_audio_device_menu(ui);
+                    });
+                });
+
+                if self.loading_devices {
+                    ui.spinner();
+                }
+            });
+            ui.add_space(8.0);
+        }
+
         egui::Grid::new("audio_config_grid")
             .num_columns(2)
             .spacing([10.0, 8.0])
@@ -545,26 +614,66 @@ impl BenchmarkPanel {
                 });
                 ui.end_row();
 
-                // Audio file picker
-                ui.label("Audio:");
+                // Audio source mode selector
+                ui.label("Source:");
+                let prev_mode = self.audio_source_mode;
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(!disabled, egui::Button::new("Select File...")).clicked() {
-                        self.pick_audio_file();
-                    }
-
-                    if let Some(path) = &self.audio_file_path {
-                        let filename = path.file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unknown");
-                        ui.label(filename);
-                    }
+                    ui.add_enabled_ui(!disabled, |ui| {
+                        ui.selectable_value(&mut self.audio_source_mode, AudioSourceMode::File, "File");
+                        #[cfg(feature = "audio-input")]
+                        {
+                            ui.selectable_value(&mut self.audio_source_mode, AudioSourceMode::Capture, "Capture");
+                            ui.selectable_value(&mut self.audio_source_mode, AudioSourceMode::LiveStream, "Live");
+                        }
+                        #[cfg(not(feature = "audio-input"))]
+                        {
+                            ui.add_enabled(false, egui::SelectableLabel::new(false, "Capture"))
+                                .on_disabled_hover_text("Build with --features audio-input");
+                            ui.add_enabled(false, egui::SelectableLabel::new(false, "Live"))
+                                .on_disabled_hover_text("Build with --features audio-input");
+                        }
+                    });
                 });
+                // Auto-refresh devices when switching to recording mode
+                #[cfg(feature = "audio-input")]
+                if self.audio_source_mode != prev_mode
+                    && self.audio_source_mode != AudioSourceMode::File
+                    && self.audio_devices.is_empty()
+                {
+                    self.refresh_audio_devices();
+                }
                 ui.end_row();
 
-                // Show duration if file selected
-                if let Some(duration_ms) = self.audio_duration_ms {
+                // File picker (File mode only)
+                if self.audio_source_mode == AudioSourceMode::File {
+                    ui.label("Audio:");
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(!disabled, egui::Button::new("Select File...")).clicked() {
+                            self.pick_audio_file();
+                        }
+
+                        if let Some(path) = &self.audio_file_path {
+                            let filename = path.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("unknown");
+                            ui.label(filename);
+                        }
+                    });
+                    ui.end_row();
+
+                    // Show duration if file selected
+                    if let Some(duration_ms) = self.audio_duration_ms {
+                        ui.label("Duration:");
+                        ui.label(format!("{:.1}s", duration_ms / 1000.0));
+                        ui.end_row();
+                    }
+                }
+
+                // Duration slider (Capture mode only)
+                #[cfg(feature = "audio-input")]
+                if self.audio_source_mode == AudioSourceMode::Capture {
                     ui.label("Duration:");
-                    ui.label(format!("{:.1}s", duration_ms / 1000.0));
+                    ui.add_enabled(!disabled, egui::Slider::new(&mut self.capture_duration_secs, 5..=60).suffix("s"));
                     ui.end_row();
                 }
 
@@ -605,13 +714,35 @@ impl BenchmarkPanel {
                 .map(|m| self.whisper_service.is_model_downloaded(m))
                 .unwrap_or(false);
 
+            let source_ready = match self.audio_source_mode {
+                AudioSourceMode::File => self.audio_file_path.is_some(),
+                #[cfg(feature = "audio-input")]
+                AudioSourceMode::Capture | AudioSourceMode::LiveStream => self.selected_device_id.is_some(),
+                #[cfg(not(feature = "audio-input"))]
+                _ => false,
+            };
+
             let can_run = !self.running
-                && self.audio_file_path.is_some()
+                && source_ready
                 && self.whisper_model.is_some()
                 && model_ready;
 
-            if ui.add_enabled(can_run, egui::Button::new("Run Audio Benchmark")).clicked() {
-                self.start_audio_benchmark();
+            let button_text = match self.audio_source_mode {
+                AudioSourceMode::File => "Run Audio Benchmark",
+                AudioSourceMode::Capture => "Record & Benchmark",
+                AudioSourceMode::LiveStream => "Start Live Transcription",
+            };
+
+            if ui.add_enabled(can_run, egui::Button::new(button_text)).clicked() {
+                match self.audio_source_mode {
+                    AudioSourceMode::File => self.start_audio_benchmark(),
+                    #[cfg(feature = "audio-input")]
+                    AudioSourceMode::Capture => self.start_capture_benchmark(),
+                    #[cfg(feature = "audio-input")]
+                    AudioSourceMode::LiveStream => self.start_live_transcription(),
+                    #[cfg(not(feature = "audio-input"))]
+                    _ => {}
+                }
             }
 
             if self.running {
@@ -800,6 +931,109 @@ impl BenchmarkPanel {
                 }
             }
         });
+    }
+
+    #[cfg(feature = "audio-input")]
+    fn start_capture_benchmark(&mut self) {
+        use llamaburn_services::AudioInputService;
+
+        let Some(device_id) = self.selected_device_id.clone() else { return };
+        let Some(model) = self.whisper_model else { return };
+        let duration = self.capture_duration_secs;
+
+        info!("Starting capture benchmark: device={}, duration={}s", device_id, duration);
+
+        self.running = true;
+        self.error = None;
+        self.audio_result = None;
+        self.live_output.clear();
+        self.progress = "Recording...".to_string();
+
+        // Show config in live output
+        let model_path = self.whisper_service.model_path(model);
+        self.live_output.push_str(&format!(
+            "Capture Benchmark\n\
+             =================\n\
+             Model: {} (~{}MB)\n\
+             Path: {}\n\
+             Device: {}\n\
+             Duration: {}s\n\
+             Iterations: {}\n\n\
+             Recording audio...\n",
+            model.label(),
+            model.size_mb(),
+            model_path.display(),
+            device_id,
+            duration,
+            self.iterations,
+        ));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.audio_rx = Some(rx);
+        let iterations = self.iterations;
+
+        std::thread::spawn(move || {
+            // Step 1: Capture audio
+            let _ = tx.send(AudioBenchmarkEvent::Progress("Recording audio...".to_string()));
+
+            let samples = match AudioInputService::capture(&device_id, duration) {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = tx.send(AudioBenchmarkEvent::Error(format!("Capture error: {}", e)));
+                    return;
+                }
+            };
+
+            let _ = tx.send(AudioBenchmarkEvent::Progress(
+                format!("Captured {} samples ({:.1}s at 16kHz)", samples.len(), samples.len() as f64 / 16000.0)
+            ));
+
+            // Step 2: Transcribe with benchmark iterations
+            let _ = tx.send(AudioBenchmarkEvent::Progress("Loading model...".to_string()));
+
+            let service = WhisperService::default();
+            let mut metrics_vec = Vec::new();
+
+            for i in 0..iterations {
+                let _ = tx.send(AudioBenchmarkEvent::Progress(format!("Iteration {} of {}...", i + 1, iterations)));
+
+                match service.transcribe_samples(&samples) {
+                    Ok((result, duration)) => {
+                        let audio_duration_ms = (samples.len() as f64 / 16000.0) * 1000.0;
+                        let processing_time_ms = duration.as_secs_f64() * 1000.0;
+                        let real_time_factor = processing_time_ms / audio_duration_ms;
+                        let word_count = result.text.split_whitespace().count() as u32;
+
+                        let metrics = llamaburn_core::AudioBenchmarkMetrics {
+                            real_time_factor,
+                            processing_time_ms,
+                            audio_duration_ms,
+                            transcription: result.text.clone(),
+                            word_count,
+                        };
+
+                        let _ = tx.send(AudioBenchmarkEvent::IterationComplete {
+                            iteration: (i + 1) as u32,
+                            metrics: metrics.clone(),
+                        });
+
+                        metrics_vec.push(metrics);
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AudioBenchmarkEvent::Error(format!("Transcription error: {}", e)));
+                        return;
+                    }
+                }
+            }
+
+            let _ = tx.send(AudioBenchmarkEvent::Done { metrics: metrics_vec });
+        });
+    }
+
+    #[cfg(feature = "audio-input")]
+    fn start_live_transcription(&mut self) {
+        // TODO: Implement live streaming transcription
+        self.error = Some("Live transcription not yet implemented".to_string());
     }
 
     fn render_model_downloads(&mut self, ui: &mut egui::Ui) {
@@ -1001,6 +1235,97 @@ impl BenchmarkPanel {
         self.model_info = None;
         self.last_whisper_model_for_info = None;
         self.audio_model_info_rx = None;
+    }
+
+    #[cfg(feature = "audio-input")]
+    fn render_audio_device_menu(&mut self, ui: &mut egui::Ui) {
+        use llamaburn_services::DeviceType;
+        use std::collections::BTreeMap;
+
+        // Recording Device submenu
+        ui.menu_button("Recording Device", |ui| {
+            if self.audio_devices.is_empty() {
+                ui.label("No devices found");
+                return;
+            }
+
+            // Group devices by card
+            let mut groups: BTreeMap<String, Vec<&llamaburn_services::AudioDevice>> = BTreeMap::new();
+
+            for device in &self.audio_devices {
+                let group_key = device.card_name.clone()
+                    .or_else(|| device.card_id.clone())
+                    .unwrap_or_else(|| "System".to_string());
+                groups.entry(group_key).or_default().push(device);
+            }
+
+            // Render grouped devices
+            for (group_name, devices) in &groups {
+                ui.label(egui::RichText::new(group_name).strong().size(12.0));
+                ui.separator();
+
+                for device in devices {
+                    let selected = self.selected_device_id.as_ref() == Some(&device.id);
+                    let prefix = match selected { true => "• ", false => "  " };
+
+                    // Friendly device type label
+                    let type_suffix = match device.device_type {
+                        DeviceType::PluginHardware => " (Recommended)",
+                        DeviceType::Hardware => " (Direct)",
+                        DeviceType::Default => " (Default)",
+                        DeviceType::PulseAudio | DeviceType::Other => "",
+                    };
+
+                    let label = format!("{}{}{}", prefix, device.name, type_suffix);
+
+                    if !ui.button(label).clicked() {
+                        continue;
+                    }
+                    self.selected_device_id = Some(device.id.clone());
+                    ui.close_menu();
+                }
+
+                ui.add_space(4.0);
+            }
+        });
+
+        ui.separator();
+
+        // Rescan Audio Devices
+        if !ui.button("Rescan Audio Devices").clicked() {
+            return;
+        }
+        self.refresh_audio_devices();
+        ui.close_menu();
+    }
+
+    #[cfg(feature = "audio-input")]
+    fn refresh_audio_devices(&mut self) {
+        use llamaburn_services::AudioInputService;
+
+        self.loading_devices = true;
+
+        let devices = match AudioInputService::list_devices() {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("Failed to list audio devices: {}", e);
+                self.error = Some(format!("Audio device error: {}", e));
+                self.loading_devices = false;
+                return;
+            }
+        };
+
+        info!("Found {} audio devices", devices.len());
+
+        // Auto-select default device if none selected
+        if self.selected_device_id.is_none() {
+            let default_device = devices.iter().find(|d| d.is_default);
+            let fallback = devices.first();
+            self.selected_device_id = default_device.or(fallback).map(|d| d.id.clone());
+        }
+
+        self.audio_devices = devices;
+        self.loading_devices = false;
     }
 
     fn refresh_rankings(&mut self) {

@@ -21,6 +21,9 @@ Audio transcription requires additional build dependencies:
 ```bash
 # Required for whisper-rs
 sudo apt install cmake clang
+
+# Required for live microphone recording (cpal/ALSA)
+sudo apt install libasound2-dev
 ```
 
 ### Build with GPU Support (ROCm)
@@ -31,13 +34,13 @@ For AMD GPUs (7900 XT, etc.) with ROCm:
 cd agent
 
 # Release build with ROCm GPU acceleration
-cargo build --release -p llamaburn-gui --features whisper-gpu
+cargo build --release -p llamaburn-gui --features whisper-gpu,audio-input
 ```
 
 ### Build with CPU Only
 
 ```bash
-cargo build --release -p llamaburn-gui --features whisper
+cargo build --release -p llamaburn-gui --features whisper,audio-input
 ```
 
 ### Feature Flags
@@ -46,6 +49,7 @@ cargo build --release -p llamaburn-gui --features whisper
 |---------|-------------|
 | `whisper` | CPU-only Whisper transcription |
 | `whisper-gpu` | ROCm GPU-accelerated (hipBLAS) |
+| `audio-input` | Live microphone recording (requires libasound2-dev) |
 
 ## Development (Hot Reload)
 
@@ -55,11 +59,14 @@ cd agent
 # Install cargo-watch (once)
 cargo install cargo-watch
 
-# Run with hot reload (no audio)
+# Run with hot reload (no audio features)
 cargo watch -x 'run -p llamaburn-gui'
 
-# Run with hot reload + GPU audio
-cargo watch -x 'run -p llamaburn-gui --features whisper-gpu'
+# Run with hot reload + GPU audio + mic recording
+cargo watch -x 'run -p llamaburn-gui --features whisper-gpu,audio-input'
+
+# Run with hot reload + CPU audio + mic recording
+cargo watch -x 'run -p llamaburn-gui --features whisper,audio-input'
 ```
 
 Changes to any `.rs` file trigger automatic rebuild (~1-2s incremental).

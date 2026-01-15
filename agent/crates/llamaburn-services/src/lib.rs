@@ -1,3 +1,5 @@
+#[cfg(feature = "audio-input")]
+mod audio_input;
 mod benchmark;
 mod gpu_monitor;
 mod history;
@@ -6,6 +8,8 @@ mod ollama;
 mod settings;
 mod whisper;
 
+#[cfg(feature = "audio-input")]
+pub use audio_input::{AudioDevice, AudioInputError, AudioInputService, DeviceType, StreamHandle};
 pub use benchmark::BenchmarkService;
 pub use gpu_monitor::{GpuMetrics, GpuMonitor, GpuMonitorError};
 pub use history::{AudioHistoryEntry, BenchmarkHistoryEntry, HistoryError, HistoryFilter, HistoryService};

@@ -52,3 +52,4 @@ libc = "0.2"
 default = []
 whisper = ["llamaburn-services/whisper"]
 whisper-gpu = ["llamaburn-services/whisper-gpu"]
+audio-input = ["llamaburn-services/audio-input"]

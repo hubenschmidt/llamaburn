@@ -230,6 +230,73 @@ impl WhisperService {
         Err(WhisperError::FeatureNotEnabled)
     }
 
+    /// Transcribe from raw 16kHz mono f32 samples (for captured microphone audio)
+    #[cfg(feature = "whisper")]
+    pub fn transcribe_samples(&self, samples: &[f32]) -> Result<(TranscriptionResult, Duration), WhisperError> {
+        use std::time::Instant;
+
+        let ctx = self
+            .context
+            .as_ref()
+            .ok_or_else(|| WhisperError::ModelLoadError("No model loaded".into()))?;
+
+        debug!("Transcribing {} samples", samples.len());
+
+        // Configure whisper
+        let mut params = whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
+        params.set_language(Some("en"));
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+
+        // Run transcription
+        let start = Instant::now();
+        let mut state = ctx
+            .create_state()
+            .map_err(|e| WhisperError::TranscriptionError(e.to_string()))?;
+
+        state
+            .full(params, samples)
+            .map_err(|e| WhisperError::TranscriptionError(e.to_string()))?;
+
+        let elapsed = start.elapsed();
+
+        // Extract segments
+        let num_segments = state.full_n_segments();
+        let mut segments = Vec::new();
+        let mut full_text = String::new();
+
+        for i in 0..num_segments {
+            let Some(seg) = state.get_segment(i) else {
+                continue;
+            };
+
+            let text = seg.to_str()
+                .map_err(|e| WhisperError::TranscriptionError(e.to_string()))?
+                .to_string();
+
+            full_text.push_str(&text);
+            segments.push(Segment {
+                start_ms: seg.start_timestamp() * 10,
+                end_ms: seg.end_timestamp() * 10,
+                text,
+            });
+        }
+
+        let result = TranscriptionResult {
+            text: full_text.trim().to_string(),
+            segments,
+            language: "en".to_string(),
+        };
+
+        Ok((result, elapsed))
+    }
+
+    #[cfg(not(feature = "whisper"))]
+    pub fn transcribe_samples(&self, _samples: &[f32]) -> Result<(TranscriptionResult, Duration), WhisperError> {
+        Err(WhisperError::FeatureNotEnabled)
+    }
+
     #[cfg(feature = "whisper")]
     fn load_audio(&self, path: &Path) -> Result<Vec<f32>, WhisperError> {
         let ext = path

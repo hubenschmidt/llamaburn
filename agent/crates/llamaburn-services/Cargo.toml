@@ -45,7 +45,13 @@ hound = "3.5"
 symphonia = { version = "0.5", features = ["mp3", "flac", "aac"] }
 rubato = "0.15"
 
+# Audio input (microphone capture)
+# Requires libasound2-dev on Linux
+cpal = { version = "0.15", optional = true }
+ringbuf = { version = "0.4", optional = true }
+
 [features]
 default = []
 whisper = ["whisper-rs"]
 whisper-gpu = ["whisper", "whisper-rs/hipblas"]
+audio-input = ["cpal", "ringbuf"]
