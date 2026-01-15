@@ -10,6 +10,7 @@ pub enum WhisperModel {
     Medium,
     Large,
     LargeV3,
+    LargeV3Turbo,
 }
 
 impl WhisperModel {
@@ -21,6 +22,7 @@ impl WhisperModel {
             WhisperModel::Medium => "Medium",
             WhisperModel::Large => "Large",
             WhisperModel::LargeV3 => "Large-v3",
+            WhisperModel::LargeV3Turbo => "Turbo",
         }
     }
 
@@ -32,6 +34,7 @@ impl WhisperModel {
             WhisperModel::Medium => "ggml-medium.bin",
             WhisperModel::Large => "ggml-large.bin",
             WhisperModel::LargeV3 => "ggml-large-v3.bin",
+            WhisperModel::LargeV3Turbo => "ggml-large-v3-turbo.bin",
         }
     }
 
@@ -50,6 +53,7 @@ impl WhisperModel {
             WhisperModel::Medium => 1500,
             WhisperModel::Large => 3100,
             WhisperModel::LargeV3 => 3100,
+            WhisperModel::LargeV3Turbo => 1600,
         }
     }
 
@@ -61,6 +65,7 @@ impl WhisperModel {
             WhisperModel::Medium,
             WhisperModel::Large,
             WhisperModel::LargeV3,
+            WhisperModel::LargeV3Turbo,
         ]
     }
 }

@@ -468,13 +468,6 @@ impl BenchmarkPanel {
                 self.start_audio_benchmark();
             }
 
-            let model_exists = self.whisper_service.is_model_downloaded(self.whisper_model);
-            if !model_exists && !self.running {
-                if ui.button("Download Model").clicked() {
-                    self.download_whisper_model();
-                }
-            }
-
             if self.running {
                 if ui.button("Cancel").clicked() {
                     self.cancel_benchmark();
@@ -482,6 +475,12 @@ impl BenchmarkPanel {
                 ui.spinner();
             }
         });
+
+        ui.add_space(10.0);
+        ui.separator();
+
+        // Model download manager
+        self.render_model_downloads(ui);
 
         // Show audio results if available
         if let Some(result) = &self.audio_result {
@@ -570,8 +569,46 @@ impl BenchmarkPanel {
         self.running = false;
     }
 
-    fn download_whisper_model(&mut self) {
-        let model = self.whisper_model;
+    fn render_model_downloads(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("Whisper Models").strong());
+        ui.add_space(5.0);
+
+        let mut model_to_download: Option<WhisperModel> = None;
+
+        egui::Grid::new("whisper_models_grid")
+            .num_columns(4)
+            .spacing([10.0, 4.0])
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new("Model").small());
+                ui.label(egui::RichText::new("Size").small());
+                ui.label(egui::RichText::new("Status").small());
+                ui.label("");
+                ui.end_row();
+
+                for model in WhisperModel::all() {
+                    ui.label(model.label());
+                    ui.label(format!("{}MB", model.size_mb()));
+
+                    let downloaded = self.whisper_service.is_model_downloaded(*model);
+                    if downloaded {
+                        ui.colored_label(egui::Color32::GREEN, "Ready");
+                        ui.label(""); // Empty cell
+                    } else {
+                        ui.colored_label(egui::Color32::GRAY, "—");
+                        if ui.small_button("Download").clicked() {
+                            model_to_download = Some(*model);
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
+
+        if let Some(model) = model_to_download {
+            self.download_whisper_model(model);
+        }
+    }
+
+    fn download_whisper_model(&mut self, model: WhisperModel) {
         let url = model.download_url();
         let path = self.whisper_service.model_path(model);
 
