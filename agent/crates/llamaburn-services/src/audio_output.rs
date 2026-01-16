@@ -247,8 +247,8 @@ impl AudioOutputService {
                 let mut buf = buffer_clone.lock().unwrap();
                 buf.extend(output);
 
-                // Limit buffer size based on latency setting
-                let max_samples = (output_sample_rate as usize * output_channels * latency_ms as usize) / 1000;
+                // Limit buffer to 2x latency to prevent runaway accumulation while allowing headroom
+                let max_samples = (output_sample_rate as usize * output_channels * latency_ms as usize * 2) / 1000;
                 while buf.len() > max_samples {
                     buf.pop_front();
                 }
@@ -256,6 +256,8 @@ impl AudioOutputService {
         });
 
         let config: StreamConfig = supported_config.into();
+
+        info!(latency_ms, "Output stream config");
 
         let stream = device
             .build_output_stream(

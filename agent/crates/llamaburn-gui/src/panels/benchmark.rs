@@ -235,8 +235,6 @@ pub struct BenchmarkPanel {
     playback_device_id: Option<String>,
     #[cfg(feature = "audio-input")]
     playback_latency_ms: u32,
-    #[cfg(feature = "audio-input")]
-    recording_latency_ms: u32,
 }
 
 /// Events from async audio benchmark
@@ -343,8 +341,6 @@ impl BenchmarkPanel {
             playback_device_id: None,
             #[cfg(feature = "audio-input")]
             playback_latency_ms: 100,
-            #[cfg(feature = "audio-input")]
-            recording_latency_ms: 100,
         }
     }
 
@@ -769,8 +765,8 @@ impl BenchmarkPanel {
 
                 ui.add_space(8.0);
 
-                // Live monitor toggle - red square outline button (audio passthrough to speakers)
-                let live_monitor_active = matches!(self.audio_test_state, AudioTestState::Monitoring);
+                // Input monitor toggle - red square button (toggles live monitoring)
+                let monitor_active = matches!(self.audio_test_state, AudioTestState::Monitoring);
 
                 // Draw custom square button with hollow center
                 let btn_size = egui::vec2(18.0, 18.0);
@@ -781,19 +777,19 @@ impl BenchmarkPanel {
                     (egui::Color32::from_rgb(180, 60, 60), egui::Color32::TRANSPARENT),  // Off: red outline, hollow
                     (egui::Color32::from_rgb(220, 50, 50), egui::Color32::from_rgb(220, 50, 50)),  // On: red filled
                 ];
-                let (stroke_color, fill_color) = colors[live_monitor_active as usize];
+                let (stroke_color, fill_color) = colors[monitor_active as usize];
 
                 painter.rect(rect.shrink(2.0), 2.0, fill_color, egui::Stroke::new(2.0, stroke_color));
 
                 if response.clicked() {
-                    [Self::start_live_monitor, Self::stop_live_monitor][live_monitor_active as usize](self);
+                    [Self::start_live_monitor, Self::stop_live_monitor][monitor_active as usize](self);
                 }
 
-                let tooltips = ["Start live monitor (hear yourself)", "Stop live monitor"];
-                response.on_hover_text(tooltips[live_monitor_active as usize]);
+                let tooltips = ["Enable live monitoring", "Disable live monitoring"];
+                response.on_hover_text(tooltips[monitor_active as usize]);
 
                 // Show "Input Monitor" label when active
-                if live_monitor_active {
+                if monitor_active {
                     ui.label(egui::RichText::new("Input Monitor").small().color(egui::Color32::from_rgb(220, 50, 50)));
                 }
             });
@@ -1801,7 +1797,6 @@ impl BenchmarkPanel {
         };
 
         let can_test = self.selected_device_id.is_some() && matches!(self.audio_test_state, AudioTestState::Idle);
-        let is_monitoring = matches!(self.audio_test_state, AudioTestState::Monitoring);
 
         if ui.add_enabled(can_test, egui::Button::new(&test_label)).clicked() {
             self.start_audio_test();
@@ -1809,18 +1804,12 @@ impl BenchmarkPanel {
         }
 
         // Live Monitor toggle
-        let monitor_label = match is_monitoring {
-            true => "🎧 Stop Live Monitor",
-            false => "🎧 Live Monitor",
-        };
-
+        let is_monitoring = matches!(self.audio_test_state, AudioTestState::Monitoring);
+        let monitor_label = if is_monitoring { "🎧 Live Monitor ✓" } else { "🎧 Live Monitor" };
         let can_monitor = self.selected_device_id.is_some() && matches!(self.audio_test_state, AudioTestState::Idle | AudioTestState::Monitoring);
 
         if ui.add_enabled(can_monitor, egui::Button::new(monitor_label)).clicked() {
-            match is_monitoring {
-                true => self.stop_live_monitor(),
-                false => self.start_live_monitor(),
-            }
+            [Self::start_live_monitor, Self::stop_live_monitor][is_monitoring as usize](self);
             ui.close_menu();
         }
 
@@ -2275,11 +2264,6 @@ impl BenchmarkPanel {
                     });
                 ui.end_row();
 
-                ui.label("Latency:");
-                ui.horizontal(|ui| {
-                    ui.add(egui::Slider::new(&mut self.playback_latency_ms, 10..=500).suffix(" ms"));
-                });
-                ui.end_row();
             });
 
         ui.add_space(12.0);
@@ -2367,13 +2351,6 @@ impl BenchmarkPanel {
                             }
                         }
                     });
-                ui.end_row();
-
-                // Latency slider
-                ui.label("Latency:");
-                ui.horizontal(|ui| {
-                    ui.add(egui::Slider::new(&mut self.recording_latency_ms, 10..=500).suffix(" ms"));
-                });
                 ui.end_row();
             });
     }
