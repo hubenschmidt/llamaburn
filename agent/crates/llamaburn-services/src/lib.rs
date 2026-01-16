@@ -18,7 +18,7 @@ pub use audio_input::{AudioCaptureConfig, AudioDevice, AudioInputError, AudioInp
 #[cfg(feature = "audio-input")]
 pub use audio_output::{AudioOutputError, AudioOutputService, MonitorHandle, PlaybackHandle};
 pub use benchmark::BenchmarkService;
-pub use effect_detection::{EffectDetectionError, EffectDetectionService};
+pub use effect_detection::{EffectDetectionError, EffectDetectionService, get_llm_blind_analysis, build_llm_analysis_prompt};
 pub use gpu_monitor::{GpuMetrics, GpuMonitor, GpuMonitorError};
 pub use history::{AudioHistoryEntry, BenchmarkHistoryEntry, EffectDetectionHistoryEntry, HistoryError, HistoryFilter, HistoryService};
 pub use model_info::{ModelInfo, ModelInfoService};

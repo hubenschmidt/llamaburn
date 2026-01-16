@@ -245,7 +245,7 @@ impl EffectDetectionTool {
         match self {
             EffectDetectionTool::FxEncoderPlusPlus => "Contrastive learning for effect representation",
             EffectDetectionTool::OpenAmp => "Framework for effect detection models",
-            EffectDetectionTool::Llm2FxTools => "LLM-based effect chain prediction",
+            EffectDetectionTool::Llm2FxTools => "Dry/Wet comparison (detects processing)",
         }
     }
 
@@ -281,6 +281,24 @@ impl DetectedEffect {
     }
 }
 
+/// An effect that was actually applied (ground truth from effects rack)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppliedEffect {
+    pub name: String,
+    pub parameters: HashMap<String, f32>,
+    pub bypassed: bool,
+}
+
+/// Signal analysis results from DSP heuristics
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SignalAnalysis {
+    pub detected_delay_ms: Option<f64>,
+    pub detected_reverb_rt60_ms: Option<f64>,
+    pub frequency_change_db: Option<f64>,
+    pub dynamic_range_change_db: Option<f64>,
+    pub crest_factor_change: Option<f64>,
+}
+
 /// Result from effect detection analysis
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectDetectionResult {
@@ -289,13 +307,22 @@ pub struct EffectDetectionResult {
     pub processing_time_ms: f64,
     pub audio_duration_ms: f64,
     pub embeddings: Option<Vec<f32>>,
+    // Extended fields for comprehensive analysis
+    pub applied_effects: Option<Vec<AppliedEffect>>,
+    pub signal_analysis: Option<SignalAnalysis>,
+    pub llm_description: Option<String>,
+    pub embedding_distance: Option<f64>,
+    pub cosine_similarity: Option<f64>,
 }
 
 /// Configuration for effect detection benchmark
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectDetectionConfig {
     pub tool: EffectDetectionTool,
+    /// Processed (wet) audio path
     pub audio_path: PathBuf,
+    /// Reference (dry) audio path - required for LLM2Fx
+    pub reference_audio_path: Option<PathBuf>,
     pub iterations: u32,
 }
 
@@ -304,6 +331,7 @@ impl Default for EffectDetectionConfig {
         Self {
             tool: EffectDetectionTool::default(),
             audio_path: PathBuf::new(),
+            reference_audio_path: None,
             iterations: 1,
         }
     }

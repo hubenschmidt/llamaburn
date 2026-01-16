@@ -12,7 +12,7 @@ use std::time::Instant;
 use thiserror::Error;
 use tracing::{debug, error, info};
 
-use llamaburn_core::{DetectedEffect, EffectDetectionResult, EffectDetectionTool};
+use llamaburn_core::{DetectedEffect, EffectDetectionResult, EffectDetectionTool, SignalAnalysis};
 
 /// Get the path to the LlamaBurn venv Python, or fall back to system python3
 fn get_python_path() -> PathBuf {
@@ -69,7 +69,8 @@ impl EffectDetectionService {
                 "import openamp; print('ok')"
             }
             EffectDetectionTool::Llm2FxTools => {
-                "import llm2fx; print('ok')"
+                // Uses Fx-Encoder++ for dry/wet comparison
+                "import fxencoder_plusplus; print('ok')"
             }
         };
 
@@ -100,21 +101,34 @@ impl EffectDetectionService {
                  pip install openamp librosa"
             }
             EffectDetectionTool::Llm2FxTools => {
-                "# Create venv and install LLM2Fx-Tools\n\
+                // Dry/wet comparison mode - uses Fx-Encoder++ under the hood
+                "# Same as Fx-Encoder++ (used for dry/wet comparison)\n\
                  python3 -m venv ~/.llamaburn/venv\n\
                  source ~/.llamaburn/venv/bin/activate\n\
-                 pip install llm2fx-tools\n\
-                 # See: https://arxiv.org/abs/2512.01559"
+                 pip install fxencoder_plusplus"
             }
         }
     }
 
     /// Detect audio effects in the given audio file
-    pub fn detect(&self, audio_path: &Path) -> Result<EffectDetectionResult, EffectDetectionError> {
+    /// For LLM2Fx, reference_path (dry audio) is required
+    pub fn detect(
+        &self,
+        audio_path: &Path,
+        reference_path: Option<&Path>,
+    ) -> Result<EffectDetectionResult, EffectDetectionError> {
         if !audio_path.exists() {
             return Err(EffectDetectionError::AudioNotFound(
                 audio_path.display().to_string(),
             ));
+        }
+
+        if let Some(ref_path) = reference_path {
+            if !ref_path.exists() {
+                return Err(EffectDetectionError::AudioNotFound(
+                    format!("Reference audio: {}", ref_path.display()),
+                ));
+            }
         }
 
         info!(tool = ?self.tool, path = %audio_path.display(), "Starting effect detection");
@@ -123,7 +137,7 @@ impl EffectDetectionService {
         let result = match self.tool {
             EffectDetectionTool::FxEncoderPlusPlus => self.detect_fx_encoder(audio_path),
             EffectDetectionTool::OpenAmp => self.detect_openamp(audio_path),
-            EffectDetectionTool::Llm2FxTools => self.detect_llm2fx(audio_path),
+            EffectDetectionTool::Llm2FxTools => self.detect_llm2fx(audio_path, reference_path),
         };
 
         let elapsed = start.elapsed();
@@ -242,41 +256,177 @@ except Exception as e:
         self.run_python_script(&script, audio_path)
     }
 
-    fn detect_llm2fx(&self, audio_path: &Path) -> Result<EffectDetectionResult, EffectDetectionError> {
+    fn detect_llm2fx(
+        &self,
+        wet_path: &Path,
+        dry_path: Option<&Path>,
+    ) -> Result<EffectDetectionResult, EffectDetectionError> {
+        let dry_path = dry_path.ok_or_else(|| {
+            EffectDetectionError::ExecutionFailed(
+                "LLM2Fx requires both dry (reference) and wet (processed) audio files".to_string(),
+            )
+        })?;
+
+        // Use Fx-Encoder++ for embedding comparison + DSP signal analysis
         let script = format!(
             r#"
 import json
 import sys
-try:
-    from llm2fx import EffectPredictor
+import os
+import io
+import warnings
+import numpy as np
 
-    predictor = EffectPredictor.from_pretrained()
-    result = predictor.analyze_audio("{}")
+warnings.filterwarnings('ignore')
+os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
 
+def analyze_signal(dry_mono, wet_mono, sr):
+    """DSP-based signal analysis to detect effect characteristics"""
+    analysis = {{}}
+
+    # Ensure same length
+    min_len = min(len(dry_mono), len(wet_mono))
+    dry = dry_mono[:min_len]
+    wet = wet_mono[:min_len]
+
+    # 1. Delay detection via cross-correlation
+    # Look for echo peaks after the main signal
+    correlation = np.correlate(wet, dry, mode='full')
+    center = len(dry) - 1
+    # Look for peaks after center (delayed copies)
+    post_corr = correlation[center + int(sr * 0.01):]  # Skip first 10ms
+    if len(post_corr) > 0:
+        peak_idx = np.argmax(np.abs(post_corr))
+        peak_val = np.abs(post_corr[peak_idx])
+        main_peak = np.abs(correlation[center])
+        if main_peak > 0 and peak_val / main_peak > 0.1:  # >10% of main
+            delay_ms = (peak_idx + int(sr * 0.01)) / sr * 1000
+            analysis['detected_delay_ms'] = float(delay_ms)
+
+    # 2. Dynamic range / compression detection
+    dry_rms = np.sqrt(np.mean(dry ** 2)) + 1e-10
+    wet_rms = np.sqrt(np.mean(wet ** 2)) + 1e-10
+    dry_peak = np.max(np.abs(dry)) + 1e-10
+    wet_peak = np.max(np.abs(wet)) + 1e-10
+
+    dry_crest = dry_peak / dry_rms
+    wet_crest = wet_peak / wet_rms
+    crest_change = wet_crest - dry_crest
+    analysis['crest_factor_change'] = float(crest_change)
+
+    # Dynamic range change in dB
+    dr_change_db = 20 * np.log10(wet_rms / dry_rms)
+    analysis['dynamic_range_change_db'] = float(dr_change_db)
+
+    # 3. Frequency analysis for EQ detection
+    n_fft = min(4096, len(dry))
+    dry_spec = np.abs(np.fft.rfft(dry, n=n_fft))
+    wet_spec = np.abs(np.fft.rfft(wet, n=n_fft))
+
+    # Average spectral difference in dB
+    spec_ratio = (wet_spec + 1e-10) / (dry_spec + 1e-10)
+    freq_change_db = np.mean(20 * np.log10(spec_ratio))
+    analysis['frequency_change_db'] = float(freq_change_db)
+
+    return analysis
+
+def main():
+    import torch
+    import librosa
+
+    try:
+        from fxencoder_plusplus import load_model
+    except ImportError as e:
+        return {{"error": f"fxencoder_plusplus not installed: {{e}}"}}
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    # Load dry and wet audio
+    try:
+        dry_wav, sr = librosa.load("{}", sr=44100, mono=False)
+        wet_wav, _ = librosa.load("{}", sr=44100, mono=False)
+    except Exception as e:
+        return {{"error": f"Failed to load audio: {{e}}"}}
+
+    # Convert to mono for signal analysis
+    dry_mono = librosa.to_mono(dry_wav) if dry_wav.ndim > 1 else dry_wav
+    wet_mono = librosa.to_mono(wet_wav) if wet_wav.ndim > 1 else wet_wav
+
+    # DSP signal analysis
+    signal_analysis = analyze_signal(dry_mono, wet_mono, sr)
+
+    def to_stereo_tensor(wav):
+        if wav.ndim == 1:
+            t = torch.from_numpy(wav).unsqueeze(0).repeat(2, 1)
+        else:
+            t = torch.from_numpy(wav)
+        return t.unsqueeze(0).to(device)
+
+    dry_tensor = to_stereo_tensor(dry_wav)
+    wet_tensor = to_stereo_tensor(wet_wav)
+
+    # Load model (suppress stdout spam)
+    try:
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        model = load_model('default', device=device)
+        sys.stdout = old_stdout
+    except Exception as e:
+        sys.stdout = old_stdout
+        return {{"error": f"Failed to load model: {{e}}"}}
+
+    # Get embeddings for both
+    try:
+        with torch.no_grad():
+            dry_emb = model.get_fx_embedding(dry_tensor)
+            wet_emb = model.get_fx_embedding(wet_tensor)
+
+        diff = (wet_emb - dry_emb).cpu().detach().numpy().flatten()
+        diff_norm = float((diff ** 2).sum() ** 0.5)
+
+        dry_flat = dry_emb.cpu().detach().numpy().flatten()
+        wet_flat = wet_emb.cpu().detach().numpy().flatten()
+        cos_sim = float((dry_flat @ wet_flat) / (((dry_flat ** 2).sum() ** 0.5) * ((wet_flat ** 2).sum() ** 0.5) + 1e-8))
+
+    except Exception as e:
+        return {{"error": f"Failed to get embeddings: {{e}}"}}
+
+    # Build detected effects list
     effects = []
-    for effect in result.get('effect_chain', []):
-        effects.append({{
-            "name": effect.get('type', 'unknown'),
-            "confidence": effect.get('confidence', 0.5),
-            "parameters": effect.get('params', {{}})
-        }})
+    if signal_analysis.get('detected_delay_ms'):
+        effects.append({{"name": "delay", "confidence": 0.9, "parameters": {{"time_ms": signal_analysis['detected_delay_ms']}}}})
+    if abs(signal_analysis.get('crest_factor_change', 0)) > 1.0:
+        effects.append({{"name": "compression", "confidence": min(abs(signal_analysis['crest_factor_change']) / 3.0, 1.0)}})
+    if abs(signal_analysis.get('frequency_change_db', 0)) > 1.0:
+        effects.append({{"name": "eq", "confidence": min(abs(signal_analysis['frequency_change_db']) / 6.0, 1.0)}})
+    if diff_norm > 0.1:
+        effects.append({{"name": "processing_detected", "confidence": min(diff_norm, 1.0)}})
 
-    output = {{
+    if not effects:
+        effects.append({{"name": "minimal_difference", "confidence": 1.0}})
+
+    return {{
         "effects": effects,
-        "embeddings": []
+        "embeddings": diff.tolist()[:32],
+        "dry_wet_comparison": True,
+        "embedding_distance": diff_norm,
+        "cosine_similarity": cos_sim,
+        "signal_analysis": signal_analysis
     }}
-    print(json.dumps(output))
-except ImportError as e:
-    print(json.dumps({{"error": f"Import failed: {{e}}"}}))
-    sys.exit(1)
+
+try:
+    result = main()
+    print(json.dumps(result))
+    sys.stdout.flush()
 except Exception as e:
-    print(json.dumps({{"error": str(e)}}))
-    sys.exit(1)
+    print(json.dumps({{"error": f"Unexpected error: {{e}}"}}))
+    sys.stdout.flush()
 "#,
-            audio_path.display()
+            dry_path.display(),
+            wet_path.display()
         );
 
-        self.run_python_script(&script, audio_path)
+        self.run_python_script(&script, wet_path)
     }
 
     fn run_python_script(
@@ -362,6 +512,21 @@ except Exception as e:
             .and_then(|e| e.as_array())
             .map(|arr| arr.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect());
 
+        // Parse extended fields
+        let embedding_distance = parsed.get("embedding_distance").and_then(|v| v.as_f64());
+        let cosine_similarity = parsed.get("cosine_similarity").and_then(|v| v.as_f64());
+
+        // Parse signal analysis
+        let signal_analysis = parsed.get("signal_analysis").map(|sa| {
+            SignalAnalysis {
+                detected_delay_ms: sa.get("detected_delay_ms").and_then(|v| v.as_f64()),
+                detected_reverb_rt60_ms: sa.get("detected_reverb_rt60_ms").and_then(|v| v.as_f64()),
+                frequency_change_db: sa.get("frequency_change_db").and_then(|v| v.as_f64()),
+                dynamic_range_change_db: sa.get("dynamic_range_change_db").and_then(|v| v.as_f64()),
+                crest_factor_change: sa.get("crest_factor_change").and_then(|v| v.as_f64()),
+            }
+        });
+
         // Get audio duration (approximate from file)
         let audio_duration_ms = crate::get_audio_duration_ms(audio_path).unwrap_or(0.0);
 
@@ -371,8 +536,62 @@ except Exception as e:
             processing_time_ms: processing_time.as_secs_f64() * 1000.0,
             audio_duration_ms,
             embeddings,
+            applied_effects: None,  // Set by caller with ground truth
+            signal_analysis,
+            llm_description: None,  // Set by caller after LLM call
+            embedding_distance,
+            cosine_similarity,
         })
     }
+}
+
+/// Generate LLM blind analysis prompt from detection results
+pub fn build_llm_analysis_prompt(result: &EffectDetectionResult) -> String {
+    let mut prompt = String::from(
+        "Analyze this audio processing based on the measurements below. \
+         Describe what audio effect(s) this sounds like WITHOUT knowing what was actually applied. \
+         Focus on: delay/echo, reverb/space, EQ/tone changes, compression/dynamics.\n\n"
+    );
+
+    if let Some(distance) = result.embedding_distance {
+        prompt.push_str(&format!("Embedding distance (0=identical): {:.3}\n", distance));
+    }
+    if let Some(similarity) = result.cosine_similarity {
+        prompt.push_str(&format!("Cosine similarity (1=identical): {:.3}\n", similarity));
+    }
+
+    if let Some(ref sa) = result.signal_analysis {
+        prompt.push_str("\nSignal Analysis:\n");
+        if let Some(delay) = sa.detected_delay_ms {
+            prompt.push_str(&format!("- Echo/delay detected at {:.0}ms\n", delay));
+        }
+        if let Some(dr) = sa.dynamic_range_change_db {
+            prompt.push_str(&format!("- Dynamic range change: {:.1}dB\n", dr));
+        }
+        if let Some(crest) = sa.crest_factor_change {
+            prompt.push_str(&format!("- Crest factor change: {:.2}\n", crest));
+        }
+        if let Some(freq) = sa.frequency_change_db {
+            prompt.push_str(&format!("- Frequency change: {:.1}dB\n", freq));
+        }
+    }
+
+    prompt.push_str("\nBased on these measurements, describe what processing was likely applied in 2-3 sentences.");
+    prompt
+}
+
+/// Get LLM blind analysis using Ollama
+pub fn get_llm_blind_analysis(
+    result: &EffectDetectionResult,
+    model: &str,
+    ollama_host: &str,
+) -> Result<String, EffectDetectionError> {
+    let client = crate::OllamaClient::new(ollama_host);
+    let prompt = build_llm_analysis_prompt(result);
+
+    client.generate(model, &prompt).map_err(|e| {
+        EffectDetectionError::ExecutionFailed(format!("LLM analysis failed: {}", e))
+    })
 }
 
 #[cfg(test)]

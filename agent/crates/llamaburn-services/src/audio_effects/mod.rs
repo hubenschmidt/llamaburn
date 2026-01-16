@@ -112,4 +112,23 @@ impl EffectChain {
     pub fn clear(&mut self) {
         self.effects.clear();
     }
+
+    /// Export applied effects as serializable structs (for ground truth reporting)
+    pub fn get_applied_effects(&self) -> Vec<llamaburn_core::AppliedEffect> {
+        self.effects
+            .iter()
+            .map(|effect| {
+                let params: std::collections::HashMap<String, f32> = effect
+                    .get_params()
+                    .into_iter()
+                    .map(|p| (p.name, p.value))
+                    .collect();
+                llamaburn_core::AppliedEffect {
+                    name: effect.name().to_string(),
+                    parameters: params,
+                    bypassed: effect.is_bypassed(),
+                }
+            })
+            .collect()
+    }
 }

@@ -57,6 +57,18 @@ struct UnloadRequest {
     keep_alive: i32,
 }
 
+#[derive(Serialize)]
+struct GenerateRequest {
+    model: String,
+    prompt: String,
+    stream: bool,
+}
+
+#[derive(Deserialize)]
+struct GenerateResponse {
+    response: String,
+}
+
 pub struct OllamaClient {
     host: String,
 }
@@ -203,6 +215,28 @@ impl OllamaClient {
         });
 
         rx
+    }
+
+    /// Generate a response from a model (blocking)
+    #[instrument(skip(self, prompt), fields(model = %model_id))]
+    pub fn generate(&self, model_id: &str, prompt: &str) -> Result<String, OllamaError> {
+        let url = format!("{}/api/generate", self.host);
+        debug!("Generating response from Ollama");
+
+        let request = GenerateRequest {
+            model: model_id.to_string(),
+            prompt: prompt.to_string(),
+            stream: false,
+        };
+
+        let response = ureq::post(&url)
+            .timeout(Duration::from_secs(120)) // longer timeout for generation
+            .send_json(&request)
+            .map_err(|e| map_ureq_error(e, "Connection refused"))?;
+
+        let gen_response: GenerateResponse = response.into_json()?;
+        info!(model = model_id, "Generated response");
+        Ok(gen_response.response)
     }
 }
 

@@ -504,6 +504,11 @@ impl HistoryService {
                     processing_time_ms,
                     audio_duration_ms,
                     embeddings: None,
+                    applied_effects: None,
+                    signal_analysis: None,
+                    llm_description: None,
+                    embedding_distance: None,
+                    cosine_similarity: None,
                 },
                 created_at,
             });
@@ -557,6 +562,11 @@ impl HistoryService {
                     processing_time_ms,
                     audio_duration_ms,
                     embeddings: None,
+                    applied_effects: None,
+                    signal_analysis: None,
+                    llm_description: None,
+                    embedding_distance: None,
+                    cosine_similarity: None,
                 },
                 created_at,
             });

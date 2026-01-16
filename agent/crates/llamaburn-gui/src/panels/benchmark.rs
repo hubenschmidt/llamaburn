@@ -255,8 +255,15 @@ pub struct BenchmarkPanel {
     #[cfg(feature = "audio-input")]
     effects_rack_expanded: bool,
 
+    // Panel layout state
+    config_panel_expanded: bool,
+    config_panel_height: f32,
+    live_output_expanded: bool,
+    live_output_height: f32,
+
     // Effect detection state
     selected_effect_tool: EffectDetectionTool,
+    reference_audio_path: Option<std::path::PathBuf>,  // Dry audio for LLM2Fx
     effect_detection_result: Option<EffectDetectionResult>,
     effect_detection_running: bool,
     effect_detection_rx: Option<Receiver<Result<EffectDetectionResult, String>>>,
@@ -383,8 +390,15 @@ impl BenchmarkPanel {
             #[cfg(feature = "audio-input")]
             effects_rack_expanded: true,
 
+            // Panel layout
+            config_panel_expanded: true,
+            config_panel_height: 280.0,
+            live_output_expanded: true,
+            live_output_height: 200.0,
+
             // Effect detection
             selected_effect_tool: EffectDetectionTool::default(),
+            reference_audio_path: None,
             effect_detection_result: None,
             effect_detection_running: false,
             effect_detection_rx: None,
@@ -613,10 +627,13 @@ impl BenchmarkPanel {
                             "Effect detection complete: {} effects found",
                             detection_result.effects.len()
                         );
+                        // Format results for Live Output
+                        self.format_detection_results(&detection_result);
                         self.effect_detection_result = Some(detection_result);
                     }
                     Err(e) => {
                         warn!("Effect detection failed: {}", e);
+                        self.live_output.push_str(&format!("\n❌ Error: {}\n", e));
                         self.error = Some(format!("Effect detection failed: {}", e));
                     }
                 }
@@ -630,6 +647,82 @@ impl BenchmarkPanel {
                 self.error = Some("Effect detection thread disconnected".to_string());
             }
         }
+    }
+
+    fn format_detection_results(&mut self, result: &EffectDetectionResult) {
+        self.live_output.push_str("\n════════════════════════════════════\n");
+        self.live_output.push_str("DETECTION RESULTS\n");
+        self.live_output.push_str("════════════════════════════════════\n\n");
+
+        // Ground Truth (Applied Effects)
+        if let Some(ref applied) = result.applied_effects {
+            self.live_output.push_str("📋 APPLIED EFFECTS (Ground Truth)\n");
+            self.live_output.push_str("──────────────────────────────────\n");
+            if applied.is_empty() {
+                self.live_output.push_str("  (none)\n");
+            }
+            for effect in applied {
+                let status = if effect.bypassed { " [BYPASSED]" } else { "" };
+                self.live_output.push_str(&format!("  • {}{}\n", effect.name, status));
+                for (param, value) in &effect.parameters {
+                    self.live_output.push_str(&format!("      {}: {:.2}\n", param, value));
+                }
+            }
+            self.live_output.push('\n');
+        }
+
+        // Signal Analysis
+        if let Some(ref sa) = result.signal_analysis {
+            self.live_output.push_str("📊 SIGNAL ANALYSIS\n");
+            self.live_output.push_str("──────────────────────────────────\n");
+            if let Some(delay) = sa.detected_delay_ms {
+                self.live_output.push_str(&format!("  • Delay detected: {:.1}ms\n", delay));
+            }
+            if let Some(dr) = sa.dynamic_range_change_db {
+                self.live_output.push_str(&format!("  • Dynamic range change: {:.1}dB\n", dr));
+            }
+            if let Some(freq) = sa.frequency_change_db {
+                self.live_output.push_str(&format!("  • Frequency change: {:.1}dB\n", freq));
+            }
+            if let Some(crest) = sa.crest_factor_change {
+                self.live_output.push_str(&format!("  • Crest factor change: {:.2}\n", crest));
+            }
+            self.live_output.push('\n');
+        }
+
+        // Detected Effects
+        self.live_output.push_str("🎯 DETECTED EFFECTS\n");
+        self.live_output.push_str("──────────────────────────────────\n");
+        for effect in &result.effects {
+            self.live_output.push_str(&format!(
+                "  • {} (confidence: {:.0}%)\n",
+                effect.name,
+                effect.confidence * 100.0
+            ));
+        }
+        self.live_output.push('\n');
+
+        // Embedding Metrics
+        if let (Some(dist), Some(sim)) = (result.embedding_distance, result.cosine_similarity) {
+            self.live_output.push_str("📈 EMBEDDING METRICS\n");
+            self.live_output.push_str("──────────────────────────────────\n");
+            self.live_output.push_str(&format!("  • Distance: {:.4}\n", dist));
+            self.live_output.push_str(&format!("  • Cosine similarity: {:.4}\n", sim));
+            self.live_output.push('\n');
+        }
+
+        // LLM Blind Analysis
+        if let Some(ref description) = result.llm_description {
+            self.live_output.push_str("🤖 LLM BLIND ANALYSIS\n");
+            self.live_output.push_str("──────────────────────────────────\n");
+            self.live_output.push_str(&format!("  {}\n\n", description));
+        }
+
+        // Processing time
+        self.live_output.push_str(&format!(
+            "⏱️ Processing time: {:.1}ms\n",
+            result.processing_time_ms
+        ));
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
@@ -653,76 +746,126 @@ impl BenchmarkPanel {
         self.refresh_model_info();
         self.refresh_audio_model_info();
 
-        ui.label(
-            egui::RichText::new("Benchmark Runner")
-                .heading()
-                .color(egui::Color32::GRAY),
-        );
-        ui.add_space(10.0);
+        // Collapsible config panel
+        let config_header = egui::CollapsingHeader::new(
+            egui::RichText::new("⚙️ Benchmark Runner").strong(),
+        )
+        .default_open(self.config_panel_expanded)
+        .show(ui, |ui| {
+            self.config_panel_expanded = true;
 
-        self.render_type_selector(ui);
-        ui.add_space(10.0);
+            self.render_type_selector(ui);
+            ui.add_space(10.0);
 
-        // Config, Model Info, and Results - responsive columns
-        let available = ui.available_width();
-        let spacing = 15.0;
-        let separator_width = 10.0;
-        let total_spacing = (spacing * 4.0) + (separator_width * 2.0);
-        let content_width = (available - total_spacing).max(300.0);
+            // Scrollable config area with fixed max height
+            egui::ScrollArea::vertical()
+                .max_height(self.config_panel_height.clamp(100.0, 600.0))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    // Config, Model Info, and Results - responsive columns
+                    let available = ui.available_width();
+                    let spacing = 15.0;
+                    let separator_width = 10.0;
+                    let total_spacing = (spacing * 4.0) + (separator_width * 2.0);
+                    let content_width = (available - total_spacing).max(300.0);
 
-        // Proportional widths: Config 35%, Model Info 30%, Results 35%
-        let config_width = content_width * 0.35;
-        let info_width = content_width * 0.30;
-        let results_width = content_width * 0.35;
+                    // Proportional widths: Config 35%, Model Info 30%, Results 35%
+                    let config_width = content_width * 0.35;
+                    let info_width = content_width * 0.30;
+                    let results_width = content_width * 0.35;
 
-        ui.horizontal(|ui| {
-            // Left: Config
-            ui.vertical(|ui| {
-                ui.set_width(config_width);
-                self.render_config(ui);
-            });
+                    ui.horizontal(|ui| {
+                        // Left: Config
+                        ui.vertical(|ui| {
+                            ui.set_width(config_width);
+                            self.render_config(ui);
+                        });
 
-            ui.add_space(spacing);
-            ui.separator();
-            ui.add_space(spacing);
+                        ui.add_space(spacing);
+                        ui.separator();
+                        ui.add_space(spacing);
 
-            // Center: Model Info + Whisper Models (for Audio mode)
-            ui.vertical(|ui| {
-                ui.set_width(info_width);
-                self.render_model_info(ui);
+                        // Center: Model Info + Whisper Models (for Audio mode)
+                        ui.vertical(|ui| {
+                            ui.set_width(info_width);
+                            self.render_model_info(ui);
 
-                // Whisper Models for Audio mode
-                if self.benchmark_type == BenchmarkType::Audio {
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(5.0);
-                    self.render_model_downloads(ui);
-                }
-            });
+                            // Whisper Models for Audio mode
+                            if self.benchmark_type == BenchmarkType::Audio {
+                                ui.add_space(10.0);
+                                ui.separator();
+                                ui.add_space(5.0);
+                                self.render_model_downloads(ui);
+                            }
+                        });
 
-            ui.add_space(spacing);
-            ui.separator();
-            ui.add_space(spacing);
+                        ui.add_space(spacing);
+                        ui.separator();
+                        ui.add_space(spacing);
 
-            // Right: Results
-            ui.vertical(|ui| {
-                ui.set_width(results_width);
-                self.render_results(ui);
-            });
+                        // Right: Results
+                        ui.vertical(|ui| {
+                            ui.set_width(results_width);
+                            self.render_results(ui);
+                        });
+                    });
+
+                    // Full-width waveform display when live recording
+                    #[cfg(feature = "audio-input")]
+                    if self.live_recording || !self.waveform_peaks.is_empty() {
+                        ui.add_space(10.0);
+                        self.render_waveform_display(ui);
+                    }
+                });
+
+            // Resize handle at bottom of config panel
+            let resize_id = ui.id().with("config_panel_resize");
+            let resize_rect = ui.available_rect_before_wrap();
+            let handle_rect = egui::Rect::from_min_size(
+                egui::pos2(resize_rect.left(), resize_rect.top()),
+                egui::vec2(resize_rect.width(), 10.0),
+            );
+
+            let response = ui.interact(handle_rect, resize_id, egui::Sense::drag());
+
+            // Visual indicator
+            let handle_color = match response.hovered() || response.dragged() {
+                true => ui.style().visuals.strong_text_color(),
+                false => ui.style().visuals.weak_text_color(),
+            };
+            ui.painter().hline(
+                handle_rect.x_range(),
+                handle_rect.center().y,
+                egui::Stroke::new(2.0, handle_color),
+            );
+            ui.painter().text(
+                handle_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "⋯",
+                egui::FontId::proportional(12.0),
+                handle_color,
+            );
+
+            if response.dragged() {
+                self.config_panel_height += response.drag_delta().y;
+                self.config_panel_height = self.config_panel_height.clamp(100.0, 600.0);
+            }
+
+            if response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            }
+
+            ui.add_space(8.0);
         });
 
-        // Full-width waveform display when live recording
-        #[cfg(feature = "audio-input")]
-        if self.live_recording || !self.waveform_peaks.is_empty() {
-            ui.add_space(10.0);
-            self.render_waveform_display(ui);
+        // Track collapsed state
+        if !config_header.fully_open() {
+            self.config_panel_expanded = false;
         }
-
-        ui.add_space(10.0);
 
         if let Some(err) = &self.error {
             ui.colored_label(egui::Color32::RED, format!("Error: {}", err));
-            ui.add_space(10.0);
+            ui.add_space(5.0);
         }
 
         // Effects rack panel at bottom (Audio mode only) - reserve space
@@ -1050,6 +1193,72 @@ impl BenchmarkPanel {
                 });
                 ui.end_row();
 
+                // Reference (dry) audio selector for LLM2Fx
+                if self.selected_effect_tool == EffectDetectionTool::Llm2FxTools {
+                    ui.label("Dry Audio:");
+                    ui.horizontal(|ui| {
+                        ui.add_enabled_ui(!disabled, |ui| {
+                            let display = self
+                                .reference_audio_path
+                                .as_ref()
+                                .and_then(|p| p.file_name())
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "Select reference (dry) audio...".to_string());
+
+                            let clicked = ui.button(display).clicked();
+                            let picked = clicked.then(|| {
+                                rfd::FileDialog::new()
+                                    .add_filter("Audio", &["wav", "mp3", "flac", "ogg", "m4a"])
+                                    .pick_file()
+                            }).flatten();
+                            if let Some(path) = picked {
+                                self.reference_audio_path = Some(path);
+                            }
+
+                            let should_clear = self.reference_audio_path.is_some()
+                                && ui.small_button("✕").clicked();
+                            if should_clear {
+                                self.reference_audio_path = None;
+                            }
+                        });
+                    });
+                    ui.end_row();
+
+                    // LLM model selector for blind analysis
+                    ui.label("LLM Model:");
+                    ui.horizontal(|ui| {
+                        ui.add_enabled_ui(!disabled, |ui| {
+                            let selected_text: &str = match self.selected_model.is_empty() {
+                                true => "Select model (optional)...",
+                                false => &self.selected_model,
+                            };
+
+                            egui::ComboBox::from_id_salt("llm_model_audio")
+                                .selected_text(selected_text)
+                                .show_ui(ui, |ui| {
+                                    for model in &self.models {
+                                        if ui
+                                            .selectable_label(&self.selected_model == model, model)
+                                            .clicked()
+                                        {
+                                            self.selected_model = model.clone();
+                                        }
+                                    }
+                                });
+                        });
+
+                        if self.loading_models {
+                            ui.spinner();
+                        }
+
+                        // Refresh button
+                        if ui.small_button("↻").on_hover_text("Refresh models").clicked() {
+                            self.refresh_models();
+                        }
+                    });
+                    ui.end_row();
+                }
+
                 // Audio source mode selector
                 ui.label("Source:");
                 let prev_mode = self.audio_source_mode;
@@ -1290,12 +1499,13 @@ impl BenchmarkPanel {
         self.effect_detection_result = None;
 
         let tool = self.selected_effect_tool;
+        let reference_path = self.reference_audio_path.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         self.effect_detection_rx = Some(rx);
 
         std::thread::spawn(move || {
             let service = EffectDetectionService::new(tool);
-            let result = service.detect(&audio_path);
+            let result = service.detect(&audio_path, reference_path.as_deref());
 
             let result = match result {
                 Ok(r) => Ok(r),
@@ -1314,33 +1524,53 @@ impl BenchmarkPanel {
         };
         let duration = self.capture_duration_secs;
         let tool = self.selected_effect_tool;
+        let effect_chain = self.effect_chain.clone();
+        let llm_model = (!self.selected_model.is_empty()).then(|| self.selected_model.clone());
+
+        // Check if using LLM2Fx dry+wet mode
+        let is_dry_wet_mode = tool == EffectDetectionTool::Llm2FxTools;
 
         info!(
-            "Starting effect detection capture: device={}, duration={}s, tool={:?}",
-            device_id, duration, tool
+            "Starting effect detection capture: device={}, duration={}s, tool={:?}, dry_wet={}",
+            device_id, duration, tool, is_dry_wet_mode
         );
 
         self.effect_detection_running = true;
         self.effect_detection_result = None;
         self.live_output.clear();
+
+        let mode_text = if is_dry_wet_mode {
+            "Mode: Recording raw input + applying effects rack\n\n"
+        } else {
+            "\n"
+        };
+        let header = if is_dry_wet_mode {
+            "Effect Detection (Dry+Wet Capture)\n===================================\n"
+        } else {
+            "Effect Detection (Capture)\n===========================\n"
+        };
         self.live_output.push_str(&format!(
-            "Effect Detection (Capture)\n\
-             ===========================\n\
-             Tool: {}\n\
-             Device: {}\n\
-             Duration: {}s\n\n\
-             Recording audio...\n",
+            "{}Tool: {}\nDevice: {}\nDuration: {}s\n{}Recording audio...\n",
+            header,
             tool.label(),
             device_id,
             duration,
+            mode_text,
         ));
+
+        // Get applied effects (ground truth) before spawning thread
+        let applied_effects = if is_dry_wet_mode {
+            effect_chain.lock().ok().map(|chain| chain.get_applied_effects())
+        } else {
+            None
+        };
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.effect_detection_rx = Some(rx);
 
         std::thread::spawn(move || {
-            // Step 1: Capture audio
-            let samples = match AudioInputService::capture(&device_id, duration) {
+            // Step 1: Capture audio (raw/dry samples)
+            let dry_samples = match AudioInputService::capture(&device_id, duration) {
                 Ok(s) => s,
                 Err(e) => {
                     let _ = tx.send(Err(format!("Capture error: {}", e)));
@@ -1348,24 +1578,69 @@ impl BenchmarkPanel {
                 }
             };
 
-            // Step 2: Save to temp file
-            let temp_path = std::env::temp_dir().join("llamaburn_capture.wav");
-            if let Err(e) = Self::save_samples_to_wav(&samples, 16000, &temp_path) {
-                let _ = tx.send(Err(format!("Failed to save audio: {}", e)));
+            // Step 2: Save files and run detection
+            let service = EffectDetectionService::new(tool);
+
+            // Standard mode: single file (early return)
+            if !is_dry_wet_mode {
+                let temp_path = std::env::temp_dir().join("llamaburn_capture.wav");
+                if let Err(e) = Self::save_samples_to_wav(&dry_samples, 16000, &temp_path) {
+                    let _ = tx.send(Err(format!("Failed to save audio: {}", e)));
+                    return;
+                }
+
+                let result = service.detect(&temp_path, None);
+                let _ = std::fs::remove_file(&temp_path);
+
+                let result = result.map_err(|e| e.to_string());
+                let _ = tx.send(result);
                 return;
             }
 
-            // Step 3: Run effect detection
-            let service = EffectDetectionService::new(tool);
-            let result = service.detect(&temp_path);
+            // LLM2Fx dry+wet mode: save both files
+            let dry_path = std::env::temp_dir().join("llamaburn_dry.wav");
+            let wet_path = std::env::temp_dir().join("llamaburn_wet.wav");
 
-            // Cleanup temp file
-            let _ = std::fs::remove_file(&temp_path);
+            // Save dry (original)
+            if let Err(e) = Self::save_samples_to_wav(&dry_samples, 16000, &dry_path) {
+                let _ = tx.send(Err(format!("Failed to save dry audio: {}", e)));
+                return;
+            }
 
-            let result = match result {
-                Ok(r) => Ok(r),
-                Err(e) => Err(e.to_string()),
-            };
+            // Clone and apply effects for wet
+            let mut wet_samples = dry_samples.clone();
+            if let Ok(mut chain) = effect_chain.lock() {
+                chain.process(&mut wet_samples);
+            }
+
+            // Save wet (with effects)
+            if let Err(e) = Self::save_samples_to_wav(&wet_samples, 16000, &wet_path) {
+                let _ = std::fs::remove_file(&dry_path);
+                let _ = tx.send(Err(format!("Failed to save wet audio: {}", e)));
+                return;
+            }
+
+            // Run detection with both files
+            let mut result = service.detect(&wet_path, Some(dry_path.as_path()));
+
+            // Cleanup both temp files
+            let _ = std::fs::remove_file(&dry_path);
+            let _ = std::fs::remove_file(&wet_path);
+
+            // Add ground truth applied effects to result
+            if let Ok(ref mut r) = result {
+                r.applied_effects = applied_effects;
+            }
+
+            // LLM blind analysis (if model selected)
+            if let (Ok(ref mut r), Some(ref model)) = (&mut result, &llm_model) {
+                match llamaburn_services::get_llm_blind_analysis(r, model, "http://localhost:11434") {
+                    Ok(description) => r.llm_description = Some(description),
+                    Err(e) => tracing::warn!("LLM blind analysis failed: {}", e),
+                }
+            }
+
+            let result = result.map_err(|e| e.to_string());
             let _ = tx.send(result);
         });
     }
@@ -1427,9 +1702,9 @@ impl BenchmarkPanel {
                 return;
             }
 
-            // Run effect detection
+            // Run effect detection (no reference for live mode)
             let service = EffectDetectionService::new(tool);
-            let result = service.detect(&temp_path);
+            let result = service.detect(&temp_path, None);
 
             // Cleanup
             let _ = std::fs::remove_file(&temp_path);
@@ -1910,7 +2185,7 @@ impl BenchmarkPanel {
                     let temp_path = std::env::temp_dir().join("llamaburn_fx_chunk.wav");
                     if Self::save_samples_to_wav(&chunk, 16000, &temp_path).is_ok() {
                         let fx_service = EffectDetectionService::new(tool);
-                        match fx_service.detect(&temp_path) {
+                        match fx_service.detect(&temp_path, None) {
                             Ok(result) => {
                                 let _ =
                                     event_tx_clone.send(LiveTranscriptionEvent::FxDetection(result));
@@ -2258,36 +2533,80 @@ impl BenchmarkPanel {
         let _ = open::that(&url);
     }
 
-    fn render_live_output_with_reserved(&self, ui: &mut egui::Ui, reserved_height: f32) {
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("Live Output")
-                    .heading()
-                    .color(egui::Color32::GRAY),
+    fn render_live_output_with_reserved(&mut self, ui: &mut egui::Ui, reserved_height: f32) {
+        // Build header text with progress indicator
+        let header_text = match self.progress.is_empty() {
+            true => "📋 Live Output".to_string(),
+            false => format!("📋 Live Output — {}", self.progress),
+        };
+
+        let header = egui::CollapsingHeader::new(
+            egui::RichText::new(header_text).strong(),
+        )
+        .default_open(self.live_output_expanded)
+        .show(ui, |ui| {
+            self.live_output_expanded = true;
+
+            // Calculate available height
+            let available_height = ui.available_height() - 10.0 - reserved_height;
+            let content_height = self.live_output_height.clamp(80.0, available_height.max(100.0));
+
+            egui::ScrollArea::vertical()
+                .max_height(content_height)
+                .auto_shrink([false, false])
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.live_output.as_str())
+                            .font(egui::TextStyle::Monospace)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(10),
+                    );
+                });
+
+            // Resize handle
+            let resize_id = ui.id().with("live_output_resize");
+            let resize_rect = ui.available_rect_before_wrap();
+            let handle_rect = egui::Rect::from_min_size(
+                egui::pos2(resize_rect.left(), resize_rect.top()),
+                egui::vec2(resize_rect.width(), 8.0),
             );
-            if !self.progress.is_empty() {
-                ui.separator();
-                ui.label(&self.progress);
+
+            let response = ui.interact(handle_rect, resize_id, egui::Sense::drag());
+
+            // Visual indicator
+            let handle_color = match response.hovered() || response.dragged() {
+                true => ui.style().visuals.strong_text_color(),
+                false => ui.style().visuals.weak_text_color(),
+            };
+            ui.painter().hline(
+                handle_rect.x_range(),
+                handle_rect.center().y,
+                egui::Stroke::new(2.0, handle_color),
+            );
+            ui.painter().text(
+                handle_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "⋯",
+                egui::FontId::proportional(10.0),
+                handle_color,
+            );
+
+            if response.dragged() {
+                self.live_output_height += response.drag_delta().y;
+                self.live_output_height = self.live_output_height.clamp(80.0, 800.0);
+            }
+
+            // Change cursor on hover
+            if response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
             }
         });
 
-        ui.separator();
-
-        // Use remaining vertical space minus reserved area for effects rack
-        let available_height = ui.available_height() - 10.0 - reserved_height;
-        egui::ScrollArea::vertical()
-            .max_height(available_height.max(100.0))
-            .auto_shrink([false, false])
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                // Using &str makes it read-only, interactive(true) allows text selection
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.live_output.as_str())
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(20),
-                );
-            });
+        // Track collapsed state
+        if !header.fully_open() {
+            self.live_output_expanded = false;
+        }
     }
 
     fn render_results(&self, ui: &mut egui::Ui) {
