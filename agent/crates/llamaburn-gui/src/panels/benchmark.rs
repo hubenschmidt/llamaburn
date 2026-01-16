@@ -247,9 +247,11 @@ pub struct BenchmarkPanel {
 
     // Audio effects chain
     #[cfg(feature = "audio-input")]
-    effect_chain: std::sync::Arc<std::sync::Mutex<llamaburn_services::effects::EffectChain>>,
+    effect_chain: std::sync::Arc<std::sync::Mutex<llamaburn_services::audio_effects::EffectChain>>,
     #[cfg(feature = "audio-input")]
     show_effects_ui: bool,
+    #[cfg(feature = "audio-input")]
+    effects_rack_expanded: bool,
 }
 
 /// Events from async audio benchmark
@@ -364,10 +366,12 @@ impl BenchmarkPanel {
 
             #[cfg(feature = "audio-input")]
             effect_chain: std::sync::Arc::new(std::sync::Mutex::new(
-                llamaburn_services::effects::EffectChain::new(),
+                llamaburn_services::audio_effects::EffectChain::new(),
             )),
             #[cfg(feature = "audio-input")]
             show_effects_ui: false,
+            #[cfg(feature = "audio-input")]
+            effects_rack_expanded: true,
         }
     }
 
@@ -635,8 +639,26 @@ impl BenchmarkPanel {
             ui.add_space(10.0);
         }
 
-        // Live output takes remaining space
-        self.render_live_output(ui);
+        // Effects rack panel at bottom (Audio mode only) - reserve space
+        #[cfg(feature = "audio-input")]
+        let effects_rack_height = {
+            let is_audio = self.benchmark_type == BenchmarkType::Audio;
+            // 40px collapsed, 230px expanded (180px panel + header/padding)
+            let heights = [0.0, [40.0, 230.0][self.effects_rack_expanded as usize]];
+            heights[is_audio as usize]
+        };
+        #[cfg(not(feature = "audio-input"))]
+        let effects_rack_height = 0.0;
+
+        // Live output takes remaining space (minus effects rack)
+        self.render_live_output_with_reserved(ui, effects_rack_height);
+
+        // Effects rack panel at bottom (Audio mode only)
+        #[cfg(feature = "audio-input")]
+        if self.benchmark_type == BenchmarkType::Audio {
+            ui.add_space(10.0);
+            self.render_effects_rack(ui);
+        }
 
         // Audio settings dialog (rendered as egui Window)
         #[cfg(feature = "audio-input")]
@@ -1781,7 +1803,7 @@ impl BenchmarkPanel {
         let _ = open::that(&url);
     }
 
-    fn render_live_output(&self, ui: &mut egui::Ui) {
+    fn render_live_output_with_reserved(&self, ui: &mut egui::Ui, reserved_height: f32) {
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new("Live Output")
@@ -1796,8 +1818,8 @@ impl BenchmarkPanel {
 
         ui.separator();
 
-        // Use all remaining vertical space
-        let available_height = ui.available_height() - 10.0;
+        // Use remaining vertical space minus reserved area for effects rack
+        let available_height = ui.available_height() - 10.0 - reserved_height;
         egui::ScrollArea::vertical()
             .max_height(available_height.max(100.0))
             .auto_shrink([false, false])
@@ -2673,12 +2695,12 @@ impl BenchmarkPanel {
 
     #[cfg(feature = "audio-input")]
     fn render_add_effect_menu(&self, ui: &mut egui::Ui) {
-        use llamaburn_services::effects::{
+        use llamaburn_services::audio_effects::{
             CompressorEffect, DelayEffect, GainEffect, HighPassEffect, LowPassEffect, ReverbEffect,
         };
 
         ui.menu_button("➕ Add Effect", |ui| {
-            let effects: Vec<(&str, Box<dyn FnOnce() -> Box<dyn llamaburn_services::effects::AudioEffect>>)> = vec![
+            let effects: Vec<(&str, Box<dyn FnOnce() -> Box<dyn llamaburn_services::audio_effects::AudioEffect>>)> = vec![
                 ("Gain", Box::new(|| Box::new(GainEffect::new(0.0)))),
                 ("High Pass Filter", Box::new(|| Box::new(HighPassEffect::new(80.0, 44100.0)))),
                 ("Low Pass Filter", Box::new(|| Box::new(LowPassEffect::new(12000.0, 44100.0)))),
@@ -2744,6 +2766,138 @@ impl BenchmarkPanel {
         }
         chain.clear();
         ui.close_menu();
+    }
+
+    /// Ableton-style horizontal effects rack panel at bottom of UI
+    #[cfg(feature = "audio-input")]
+    fn render_effects_rack(&mut self, ui: &mut egui::Ui) {
+        use llamaburn_services::audio_effects::{
+            CompressorEffect, DelayEffect, GainEffect, HighPassEffect, LowPassEffect, ReverbEffect,
+        };
+
+        let header = egui::CollapsingHeader::new(
+            egui::RichText::new("🎛️ Effects Rack").strong(),
+        )
+        .default_open(self.effects_rack_expanded)
+        .show(ui, |ui| {
+            self.effects_rack_expanded = true;
+
+            // Header row with controls and Add button
+            ui.horizontal(|ui| {
+                let Ok(mut chain) = self.effect_chain.lock() else {
+                    return;
+                };
+
+                let bypass_all = chain.is_bypass_all();
+                let label = ["🔊 Active", "🔇 Bypassed"][bypass_all as usize];
+                if ui.selectable_label(bypass_all, label).clicked() {
+                    chain.set_bypass_all(!bypass_all);
+                }
+
+                ui.separator();
+
+                // Add effect menu in header
+                ui.menu_button("➕ Add", |ui| {
+                    let effects: Vec<(&str, Box<dyn FnOnce() -> Box<dyn llamaburn_services::audio_effects::AudioEffect>>)> = vec![
+                        ("Gain", Box::new(|| Box::new(GainEffect::new(0.0)))),
+                        ("High Pass", Box::new(|| Box::new(HighPassEffect::new(80.0, 44100.0)))),
+                        ("Low Pass", Box::new(|| Box::new(LowPassEffect::new(12000.0, 44100.0)))),
+                        ("Compressor", Box::new(|| Box::new(CompressorEffect::new(-20.0, 10.0, 100.0)))),
+                        ("Delay", Box::new(|| Box::new(DelayEffect::new(250.0, 0.4, 0.3, 44100.0)))),
+                        ("Reverb", Box::new(|| Box::new(ReverbEffect::new(0.5, 0.5, 0.3, 44100.0)))),
+                    ];
+
+                    for (name, create_effect) in effects {
+                        if !ui.button(name).clicked() { continue; }
+                        chain.add(create_effect());
+                        ui.close_menu();
+                    }
+                });
+
+                if chain.effects().is_empty() { return; }
+
+                ui.separator();
+
+                if ui.small_button("🗑️ Clear All").clicked() {
+                    chain.clear();
+                }
+            });
+
+            let Ok(mut chain) = self.effect_chain.lock() else {
+                return;
+            };
+
+            if chain.effects().is_empty() {
+                ui.label("No effects - click Add to insert effects");
+                return;
+            }
+
+            ui.add_space(5.0);
+
+            // Fixed height panel with horizontal effect cards
+            let panel_height = 160.0;
+            let card_width = 150.0;
+
+            ui.horizontal_top(|ui| {
+                let mut to_remove: Option<usize> = None;
+
+                for (i, effect) in chain.effects_mut().iter_mut().enumerate() {
+                    egui::Frame::group(ui.style())
+                        .fill(ui.style().visuals.extreme_bg_color)
+                        .inner_margin(egui::Margin::same(6.0))
+                        .show(ui, |ui| {
+                            ui.vertical(|ui| {
+                                ui.set_min_size(egui::vec2(card_width, panel_height));
+                                ui.set_max_width(card_width);
+
+                                // Header row: bypass + name + remove
+                                ui.horizontal(|ui| {
+                                    let bypassed = effect.is_bypassed();
+                                    let bypass_label = ["▶", "⏸"][bypassed as usize];
+                                    if ui.small_button(bypass_label).clicked() {
+                                        effect.set_bypass(!bypassed);
+                                    }
+
+                                    let colors = [egui::Color32::LIGHT_GREEN, egui::Color32::GRAY];
+                                    ui.colored_label(colors[bypassed as usize], egui::RichText::new(effect.name()).strong());
+
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if ui.small_button("✕").clicked() {
+                                            to_remove = Some(i);
+                                        }
+                                    });
+                                });
+
+                                ui.separator();
+
+                                // Parameters - each param gets label row + slider row
+                                for param in effect.get_params() {
+                                    let mut value = param.value;
+                                    ui.label(format!("{}: {:.2}", param.name, value));
+                                    let slider = egui::Slider::new(&mut value, param.min..=param.max)
+                                        .show_value(false);
+                                    if ui.add_sized([card_width - 14.0, 16.0], slider).changed() {
+                                        effect.set_param(&param.name, value);
+                                    }
+                                }
+                            });
+                        });
+
+                    ui.add_space(4.0);
+                }
+
+                drop(chain);
+
+                if let Some(idx) = to_remove {
+                    let _ = self.effect_chain.lock().map(|mut c| c.remove(idx));
+                }
+            });
+        });
+
+        // Track collapsed state
+        if !header.fully_open() {
+            self.effects_rack_expanded = false;
+        }
     }
 
     fn refresh_rankings(&mut self) {

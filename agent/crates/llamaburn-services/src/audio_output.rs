@@ -13,7 +13,7 @@ use cpal::StreamConfig;
 use thiserror::Error;
 use tracing::{error, info};
 
-use crate::effects::EffectChain;
+use crate::audio_effects::EffectChain;
 
 #[derive(Debug, Error)]
 pub enum AudioOutputError {

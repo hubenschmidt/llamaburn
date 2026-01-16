@@ -3,7 +3,7 @@ mod audio_input;
 #[cfg(feature = "audio-input")]
 mod audio_output;
 #[cfg(feature = "audio-input")]
-pub mod effects;
+pub mod audio_effects;
 mod benchmark;
 mod gpu_monitor;
 mod history;
