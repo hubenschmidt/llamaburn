@@ -2219,6 +2219,19 @@ impl BenchmarkPanel {
     }
 
     fn install_effect_tool(&mut self, tool: EffectDetectionTool) {
+        // Stop any active recording session
+        self.stop_recording();
+
+        // Clear session state
+        self.effect_detection_result = None;
+        self.error = None;
+        self.progress.clear();
+        #[cfg(feature = "audio-input")]
+        {
+            self.waveform_peaks.clear();
+            self.transcription_segments.clear();
+        }
+
         let instructions = EffectDetectionService::install_instructions(tool);
 
         info!("Showing install instructions for: {:?}", tool);
