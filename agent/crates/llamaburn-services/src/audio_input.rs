@@ -12,7 +12,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, FromSample, SampleFormat, StreamConfig};
 // ringbuf removed - cpal::Stream is not Send, using simple Vec buffer in processing thread
 use thiserror::Error;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 const TARGET_SAMPLE_RATE: u32 = 16000;
 
@@ -63,6 +63,43 @@ pub enum DeviceType {
     Default,
     /// Other (surround, dsnoop, etc.)
     Other,
+}
+
+/// Audio sample format for recording
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AudioSampleFormat {
+    I16,
+    I24,
+    #[default]
+    F32,
+}
+
+impl AudioSampleFormat {
+    fn to_cpal(self) -> SampleFormat {
+        match self {
+            AudioSampleFormat::I16 => SampleFormat::I16,
+            AudioSampleFormat::I24 => SampleFormat::I32, // cpal uses I32 for 24-bit
+            AudioSampleFormat::F32 => SampleFormat::F32,
+        }
+    }
+}
+
+/// Configuration for audio capture
+#[derive(Debug, Clone)]
+pub struct AudioCaptureConfig {
+    pub sample_rate: u32,
+    pub sample_format: AudioSampleFormat,
+    pub channels: u16,
+}
+
+impl Default for AudioCaptureConfig {
+    fn default() -> Self {
+        Self {
+            sample_rate: 44100,
+            sample_format: AudioSampleFormat::F32,
+            channels: 2,
+        }
+    }
 }
 
 /// Handle to stop a running audio stream
@@ -237,7 +274,51 @@ impl AudioInputService {
         Err(AudioInputError::DeviceNotFound(device_id.to_string()))
     }
 
-    /// Capture audio for a fixed duration, return 16kHz mono f32 samples
+    /// Find best matching stream config for user preferences
+    fn find_best_config(device: &Device, config: &AudioCaptureConfig) -> Result<cpal::SupportedStreamConfig, AudioInputError> {
+        let supported_configs = device
+            .supported_input_configs()
+            .map_err(|e| AudioInputError::ConfigError(e.to_string()))?;
+
+        let target_format = config.sample_format.to_cpal();
+        let target_channels = config.channels;
+
+        // Try to find exact match first
+        let configs: Vec<_> = supported_configs.collect();
+
+        // Score each config: lower is better
+        let score_config = |c: &cpal::SupportedStreamConfigRange| -> u32 {
+            let mut score = 0u32;
+
+            // Format mismatch penalty
+            score += (c.sample_format() != target_format) as u32 * 1000;
+
+            // Channel mismatch penalty
+            let ch_diff = (c.channels() as i32 - target_channels as i32).unsigned_abs();
+            score += ch_diff * 100;
+
+            // Sample rate: check if target is in range
+            let min_rate = c.min_sample_rate().0;
+            let max_rate = c.max_sample_rate().0;
+            let rate_in_range = config.sample_rate >= min_rate && config.sample_rate <= max_rate;
+            score += (!rate_in_range) as u32 * 500;
+
+            score
+        };
+
+        let best = configs.iter()
+            .min_by_key(|c| score_config(c))
+            .ok_or_else(|| AudioInputError::ConfigError("No supported configs".to_string()))?;
+
+        // Clamp sample rate to supported range
+        let min_rate = best.min_sample_rate().0;
+        let max_rate = best.max_sample_rate().0;
+        let actual_rate = config.sample_rate.clamp(min_rate, max_rate);
+
+        Ok(best.clone().with_sample_rate(cpal::SampleRate(actual_rate)))
+    }
+
+    /// Capture audio for a fixed duration, return 16kHz mono f32 samples (for Whisper)
     pub fn capture(
         device_id: &str,
         duration_secs: u32,
@@ -293,10 +374,92 @@ impl AudioInputService {
         Ok(resampled)
     }
 
+    /// Capture audio with user-specified settings
+    /// Returns raw f32 samples at the requested format (or closest supported)
+    pub fn capture_with_config(
+        device_id: &str,
+        duration_secs: u32,
+        audio_config: &AudioCaptureConfig,
+    ) -> Result<(Vec<f32>, u32, u16), AudioInputError> {
+        let device = Self::get_device(device_id)?;
+        let config = Self::find_best_config(&device, audio_config)?;
+
+        let sample_rate = config.sample_rate().0;
+        let channels = config.channels();
+
+        info!(
+            device = %device.name().unwrap_or_default(),
+            duration = duration_secs,
+            requested_rate = audio_config.sample_rate,
+            actual_rate = sample_rate,
+            requested_channels = audio_config.channels,
+            actual_channels = channels,
+            format = ?config.sample_format(),
+            "Starting audio capture with config"
+        );
+
+        let expected_samples = (sample_rate * duration_secs) as usize * channels as usize;
+        let (tx, rx) = channel::<Vec<f32>>();
+        let samples_collected = Arc::new(std::sync::Mutex::new(Vec::with_capacity(expected_samples)));
+        let samples_for_callback = samples_collected.clone();
+
+        let stream_config: StreamConfig = config.clone().into();
+        let stream = match config.sample_format() {
+            SampleFormat::F32 => Self::build_stream::<f32>(&device, &stream_config, tx),
+            SampleFormat::I16 => Self::build_stream::<i16>(&device, &stream_config, tx),
+            SampleFormat::I32 => Self::build_stream::<i32>(&device, &stream_config, tx),
+            format => return Err(AudioInputError::ConfigError(format!("Unsupported format: {:?}", format))),
+        }?;
+
+        stream.play().map_err(|e| AudioInputError::StreamError(e.to_string()))?;
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(duration_secs as u64);
+        while std::time::Instant::now() < deadline {
+            let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) else {
+                continue;
+            };
+            samples_for_callback.lock().unwrap().extend(chunk);
+        }
+
+        drop(stream);
+
+        let raw_samples = samples_collected.lock().unwrap().clone();
+        info!(samples = raw_samples.len(), sample_rate, channels, "Capture with config complete");
+
+        Ok((raw_samples, sample_rate, channels))
+    }
+
     /// Start streaming audio to a channel, returns handle to stop
+    /// Audio is resampled to 16kHz mono for Whisper/analysis
     pub fn start_stream(
         device_id: &str,
         chunk_tx: Sender<Vec<f32>>,
+    ) -> Result<StreamHandle, AudioInputError> {
+        Self::start_stream_internal(device_id, chunk_tx, true)
+    }
+
+    /// Start raw streaming without resampling - for live monitoring
+    /// Returns (StreamHandle, sample_rate, channels)
+    pub fn start_stream_raw(
+        device_id: &str,
+        chunk_tx: Sender<Vec<f32>>,
+    ) -> Result<(StreamHandle, u32, u16), AudioInputError> {
+        let device = Self::get_device(device_id)?;
+        let config = device
+            .default_input_config()
+            .map_err(|e| AudioInputError::ConfigError(e.to_string()))?;
+
+        let sample_rate = config.sample_rate().0;
+        let channels = config.channels();
+
+        let handle = Self::start_stream_internal(device_id, chunk_tx, false)?;
+        Ok((handle, sample_rate, channels))
+    }
+
+    fn start_stream_internal(
+        device_id: &str,
+        chunk_tx: Sender<Vec<f32>>,
+        resample_to_16k: bool,
     ) -> Result<StreamHandle, AudioInputError> {
         let device = Self::get_device(device_id)?;
         let config = device
@@ -310,14 +473,15 @@ impl AudioInputService {
             device = %device.name().unwrap_or_default(),
             sample_rate = sample_rate,
             channels = channels,
+            resample = resample_to_16k,
             "Starting audio stream"
         );
 
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_clone = stop_flag.clone();
 
-        // Chunk size for ~500ms of audio
-        let chunk_duration_ms = 500;
+        // Chunk size: 50ms for low latency monitoring, 500ms for transcription
+        let chunk_duration_ms = [50, 500][resample_to_16k as usize];
         let chunk_samples = (sample_rate * chunk_duration_ms / 1000) as usize * channels;
 
         let (internal_tx, internal_rx) = channel::<Vec<f32>>();
@@ -332,13 +496,11 @@ impl AudioInputService {
         stream.play().map_err(|e| AudioInputError::StreamError(e.to_string()))?;
 
         // Spawn thread to process and forward audio chunks
-        // Stream stays in StreamHandle - its callback runs on cpal's audio thread
         let thread_handle = thread::spawn(move || {
             let mut buffer: Vec<f32> = Vec::with_capacity(chunk_samples * 2);
 
             while !stop_flag_clone.load(Ordering::SeqCst) {
-                // Collect incoming samples
-                let Ok(samples) = internal_rx.recv_timeout(Duration::from_millis(50)) else {
+                let Ok(samples) = internal_rx.recv_timeout(Duration::from_millis(20)) else {
                     continue;
                 };
                 buffer.extend(samples);
@@ -347,14 +509,18 @@ impl AudioInputService {
                 while buffer.len() >= chunk_samples {
                     let chunk: Vec<f32> = buffer.drain(..chunk_samples).collect();
 
-                    // Convert to mono and resample
-                    let mono = Self::to_mono(&chunk, channels);
-                    let Ok(resampled) = Self::resample(&mono, sample_rate, TARGET_SAMPLE_RATE) else {
-                        warn!("Resample error in stream processing");
-                        continue;
+                    let output = match resample_to_16k {
+                        true => {
+                            let mono = Self::to_mono(&chunk, channels);
+                            match Self::resample(&mono, sample_rate, TARGET_SAMPLE_RATE) {
+                                Ok(r) => r,
+                                Err(_) => continue,
+                            }
+                        }
+                        false => chunk, // Pass through raw
                     };
 
-                    if chunk_tx.send(resampled).is_err() {
+                    if chunk_tx.send(output).is_err() {
                         return;
                     }
                 }

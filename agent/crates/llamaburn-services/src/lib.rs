@@ -1,5 +1,7 @@
 #[cfg(feature = "audio-input")]
 mod audio_input;
+#[cfg(feature = "audio-input")]
+mod audio_output;
 mod benchmark;
 mod gpu_monitor;
 mod history;
@@ -9,7 +11,9 @@ mod settings;
 mod whisper;
 
 #[cfg(feature = "audio-input")]
-pub use audio_input::{AudioDevice, AudioInputError, AudioInputService, DeviceType, StreamHandle};
+pub use audio_input::{AudioCaptureConfig, AudioDevice, AudioInputError, AudioInputService, AudioSampleFormat, DeviceType, StreamHandle};
+#[cfg(feature = "audio-input")]
+pub use audio_output::{AudioOutputError, AudioOutputService, MonitorHandle, PlaybackHandle};
 pub use benchmark::BenchmarkService;
 pub use gpu_monitor::{GpuMetrics, GpuMonitor, GpuMonitorError};
 pub use history::{AudioHistoryEntry, BenchmarkHistoryEntry, HistoryError, HistoryFilter, HistoryService};

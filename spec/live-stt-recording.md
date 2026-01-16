@@ -369,10 +369,154 @@ enum RecordingMode {
 
 ---
 
+## DAW-Style Waveform Display
+
+### Overview
+
+When live recording starts, display a real-time waveform visualization similar to a Digital Audio Workstation (DAW). This is the foundation for future full DAW functionality.
+
+### UI Layout
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│  🔊 ZOOM R24  │  Model: Medium  │  Source: [File] [Capture] [●Live]        │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  ┌─────────────────────── Waveform Display ──────────────────────────────┐ │
+│  │ ▼ Recording: 00:15.3                                      [⏹ Stop]   │ │
+│  │ ┌──────────────────────────────────────────────────────────────────┐ │ │
+│  │ │▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▄▅▆▇│░░░░░░░░░░░░│ │ │
+│  │ │▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▄▅▆▇│            │ │ │
+│  │ └──────────────────────────────────────────────────────────────────┘ │ │
+│  │  0:00      0:05      0:10      0:15      0:20      0:25      0:30   │ │
+│  └──────────────────────────────────────────────────────────────────────┘ │
+│                                                                            │
+│  ┌─────────────────────── Live Transcription ────────────────────────────┐ │
+│  │ [00:00.0 → 00:05.2] "Hello, this is a test of the live"              │ │
+│  │ [00:05.2 → 00:10.1] "transcription system running on whisper"        │ │
+│  │ [00:10.1 → 00:15.3] "with real-time waveform display..."             │ │
+│  │                                                                       │ │
+│  │ RTF: 0.72x │ GPU: 78% │ VRAM: 4.2GB │ Temp: 65°C                     │ │
+│  └───────────────────────────────────────────────────────────────────────┘ │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Waveform Display Requirements
+
+**Visual Elements:**
+- Stereo waveform (top/bottom) or mono (centered)
+- Scrolling display: new audio appears on right, old scrolls left
+- Time markers along bottom (every 5 seconds)
+- Recording duration counter
+- Recording indicator (red dot, pulsing)
+- Playhead position marker (vertical line)
+
+**Rendering:**
+- Sample peak visualization (not every sample - downsample for display)
+- ~60fps update rate for smooth scrolling
+- Color coding: recorded audio (blue/green), silence (gray), clipping (red)
+- Configurable time scale (seconds per screen width)
+
+### Live Transcription Panel
+
+**Display Format:**
+- Timestamped segments as they complete
+- Show [start → end] time range for each segment
+- Append new transcriptions as chunks are processed
+- Auto-scroll to latest
+
+**Metrics Row:**
+- Real-time factor (RTF) - updated per chunk
+- GPU utilization %
+- VRAM usage
+- Temperature
+
+### Data Structures
+
+```rust
+/// Waveform display state
+pub struct WaveformState {
+    /// Ring buffer of peak samples for display
+    pub peaks: VecDeque<WaveformPeak>,
+    /// Samples per pixel at current zoom
+    pub samples_per_pixel: usize,
+    /// Current recording duration in samples
+    pub duration_samples: usize,
+    /// Sample rate (for time display)
+    pub sample_rate: u32,
+    /// Is currently recording
+    pub recording: bool,
+}
+
+/// Single waveform peak (for efficient rendering)
+pub struct WaveformPeak {
+    pub min: f32,  // Minimum sample in window
+    pub max: f32,  // Maximum sample in window
+    pub rms: f32,  // RMS level (for color intensity)
+}
+
+/// Transcription segment with timing
+pub struct TranscriptionSegment {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+    pub rtf: f64,
+}
+```
+
+### Implementation Approach
+
+**Phase 1: Basic Waveform (MVP)**
+1. Store incoming audio peaks in ring buffer
+2. Render simple line-based waveform in egui
+3. Auto-scroll as new audio arrives
+4. Show time markers
+
+**Phase 2: Enhanced Display**
+- Color coding based on amplitude/clipping
+- Zoom in/out controls
+- Click-to-seek (for playback review)
+
+**Phase 3: Full DAW Features (Future)**
+- Multiple tracks
+- Cut/copy/paste regions
+- Effects processing
+- Export to WAV/MP3
+
+### egui Rendering
+
+```rust
+// Waveform rendering in egui
+fn render_waveform(&self, ui: &mut egui::Ui, state: &WaveformState) {
+    let (response, painter) = ui.allocate_painter(
+        egui::vec2(ui.available_width(), 100.0),
+        egui::Sense::click_and_drag(),
+    );
+
+    let rect = response.rect;
+    let center_y = rect.center().y;
+    let height = rect.height() / 2.0;
+
+    // Draw each peak as a vertical line
+    for (i, peak) in state.peaks.iter().enumerate() {
+        let x = rect.left() + i as f32;
+        let min_y = center_y - peak.min * height;
+        let max_y = center_y - peak.max * height;
+
+        painter.line_segment(
+            [egui::pos2(x, min_y), egui::pos2(x, max_y)],
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 200, 100)),
+        );
+    }
+}
+```
+
+---
+
 ## Future Enhancements
 
 - Voice activity detection (VAD) - auto-stop on silence
-- Audio level meter visualization
 - Save captured audio as WAV file
 - WER calculation against expected text
 - Multi-device recording (A/B comparison)
+- Full DAW: multi-track editing, effects, export
