@@ -969,6 +969,77 @@ approximately 120 BPM with a medium-fast groove..."
 
 ---
 
+## Audio Effect Detection / Classification
+
+Identify applied audio effects (reverb, delay, compression, etc.) from audio signals.
+
+### Audio Effect Detection Models
+
+| Model | GitHub/Paper | ROCm/GPU | Capability |
+|-------|--------------|----------|------------|
+| **Fx-Encoder++** | [Sony Research](https://github.com/SonyResearch/Fx-Encoder_PlusPlus) | ✅ PyTorch | Extract effect representations from mixtures |
+| **OpenAmp** | [GitHub](https://github.com/Alec-Wright/OpenAmp) | ✅ PyTorch | Framework for training effect detection models |
+| **LLM2Fx-Tools** | [arXiv](https://arxiv.org/abs/2512.01559) | ✅ PyTorch | LLM-based effect chain prediction |
+
+### Fx-Encoder++ (Recommended)
+
+Extracts instrument-wise audio effects representations from music mixtures using contrastive learning.
+
+**Detectable Effects:**
+- EQ (equalization)
+- Delay
+- Distortion
+- Compression
+- Limiter
+- Reverb
+- Gain
+- Stereo imaging
+
+**Installation:**
+```bash
+git clone https://github.com/SonyResearch/Fx-Encoder_PlusPlus
+pip install -r requirements.txt
+```
+
+**Usage:**
+```python
+from fx_encoder import FxEncoder
+
+encoder = FxEncoder.from_pretrained()
+embeddings = encoder.encode("mixed_audio.wav")
+# Returns: effect representations that can be compared/classified
+```
+
+### OpenAmp
+
+Framework for creating large-scale audio effects data using crowd-sourced models.
+
+**Installation:**
+```bash
+pip install openamp
+```
+
+**Usage:**
+```python
+from openamp import FxEncoder
+
+encoder = FxEncoder.from_checkpoint("path/to/checkpoint")
+encodings = encoder.extract(audio_data)
+```
+
+### LLM2Fx-Tools
+
+Multimodal framework that uses LLMs to predict audio effects parameters from natural language or audio input.
+
+**Capabilities:**
+- Predict effect parameters from text ("make it sound warmer")
+- Analyze audio to detect applied effects
+- Generate complete effect chains
+
+**Paper:** Doh et al., 2025 - "LLM2Fx-Tools: Tool Calling for Music Post-Production"
+
+---
+
 ## Audio Benchmark Modes Summary
 
 | # | Mode | Input | Output | Key Metrics | Tool | GPU |

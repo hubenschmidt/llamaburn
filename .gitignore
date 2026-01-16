@@ -21,3 +21,16 @@
 # OS
 .DS_Store
 Thumbs.db
+
+# ML Models & Caches
+*.pt
+*.pth
+*.onnx
+*.bin
+*.gguf
+*.ggml
+*.safetensors
+**/.cache/
+**/models/
+**/checkpoints/
+**/__pycache__/

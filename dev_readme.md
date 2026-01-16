@@ -2,28 +2,13 @@
 
 ## Prerequisites
 
-- Rust 1.92+ (auto-installed via `rust-toolchain.toml`)
-- System libraries for GUI:
+See [DEPENDENCIES.md](DEPENDENCIES.md) for complete build/runtime dependency list.
 
+**Quick start (Ubuntu/Debian):**
 ```bash
-# Ubuntu/Debian
-sudo apt install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+sudo apt install cmake clang libasound2-dev \
+    libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
     libxkbcommon-dev libgl1-mesa-dev libwayland-dev
-
-# Fedora
-sudo dnf install libxcb-devel libxkbcommon-devel mesa-libGL-devel wayland-devel
-```
-
-## Audio Benchmarking (Whisper STT)
-
-Audio transcription requires additional build dependencies:
-
-```bash
-# Required for whisper-rs
-sudo apt install cmake clang
-
-# Required for live microphone recording (cpal/ALSA)
-sudo apt install libasound2-dev
 ```
 
 ### Build with GPU Support (ROCm)

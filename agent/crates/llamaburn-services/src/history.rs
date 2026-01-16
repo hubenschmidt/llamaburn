@@ -1,7 +1,7 @@
 use llamaburn_benchmark::BenchmarkSummary;
 use llamaburn_core::{
     AudioBenchmarkConfig, AudioBenchmarkMetrics, AudioBenchmarkSummary, AudioMode,
-    BenchmarkConfig, BenchmarkMetrics, BenchmarkType,
+    BenchmarkConfig, BenchmarkMetrics, BenchmarkType, EffectDetectionResult, EffectDetectionTool,
 };
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -50,6 +50,15 @@ pub struct AudioHistoryEntry {
     pub config: AudioBenchmarkConfig,
     pub summary: AudioBenchmarkSummary,
     pub metrics: Vec<AudioBenchmarkMetrics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectDetectionHistoryEntry {
+    pub id: i64,
+    pub tool: EffectDetectionTool,
+    pub audio_path: String,
+    pub result: EffectDetectionResult,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -425,6 +434,135 @@ impl HistoryService {
     /// Get the database path
     pub fn db_path(&self) -> &PathBuf {
         &self.db_path
+    }
+
+    // --- Effect Detection History Methods ---
+
+    /// Save an effect detection result
+    pub fn save_effect_detection(
+        &self,
+        tool: EffectDetectionTool,
+        audio_path: &str,
+        result: &EffectDetectionResult,
+    ) -> Result<i64> {
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
+
+        let tool_str = serde_json::to_string(&tool)?;
+        let effects_json = serde_json::to_string(&result.effects)?;
+
+        conn.execute(
+            "INSERT INTO effect_detection_history (tool, audio_path, effects_json, processing_time_ms, audio_duration_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                tool_str,
+                audio_path,
+                effects_json,
+                result.processing_time_ms,
+                result.audio_duration_ms,
+            ],
+        )?;
+
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Get recent effect detection history
+    pub fn get_effect_detection_history(&self, limit: u32) -> Result<Vec<EffectDetectionHistoryEntry>> {
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, tool, audio_path, effects_json, processing_time_ms, audio_duration_ms, created_at
+             FROM effect_detection_history
+             ORDER BY created_at DESC
+             LIMIT ?1",
+        )?;
+
+        let rows = stmt.query_map(params![limit], |row| {
+            let id: i64 = row.get(0)?;
+            let tool_str: String = row.get(1)?;
+            let audio_path: String = row.get(2)?;
+            let effects_json: String = row.get(3)?;
+            let processing_time_ms: f64 = row.get(4)?;
+            let audio_duration_ms: f64 = row.get(5)?;
+            let created_at: i64 = row.get(6)?;
+
+            Ok((id, tool_str, audio_path, effects_json, processing_time_ms, audio_duration_ms, created_at))
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let (id, tool_str, audio_path, effects_json, processing_time_ms, audio_duration_ms, created_at) = row?;
+            let tool: EffectDetectionTool = serde_json::from_str(&tool_str).unwrap_or_default();
+            let effects = serde_json::from_str(&effects_json).unwrap_or_default();
+
+            results.push(EffectDetectionHistoryEntry {
+                id,
+                tool,
+                audio_path,
+                result: EffectDetectionResult {
+                    tool,
+                    effects,
+                    processing_time_ms,
+                    audio_duration_ms,
+                    embeddings: None,
+                },
+                created_at,
+            });
+        }
+
+        Ok(results)
+    }
+
+    /// Get effect detection history for a specific tool
+    pub fn get_effect_detection_by_tool(
+        &self,
+        tool: EffectDetectionTool,
+        limit: u32,
+    ) -> Result<Vec<EffectDetectionHistoryEntry>> {
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
+        let tool_str = serde_json::to_string(&tool)?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, tool, audio_path, effects_json, processing_time_ms, audio_duration_ms, created_at
+             FROM effect_detection_history
+             WHERE tool = ?1
+             ORDER BY created_at DESC
+             LIMIT ?2",
+        )?;
+
+        let rows = stmt.query_map(params![tool_str, limit], |row| {
+            let id: i64 = row.get(0)?;
+            let tool_str: String = row.get(1)?;
+            let audio_path: String = row.get(2)?;
+            let effects_json: String = row.get(3)?;
+            let processing_time_ms: f64 = row.get(4)?;
+            let audio_duration_ms: f64 = row.get(5)?;
+            let created_at: i64 = row.get(6)?;
+
+            Ok((id, tool_str, audio_path, effects_json, processing_time_ms, audio_duration_ms, created_at))
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let (id, tool_str, audio_path, effects_json, processing_time_ms, audio_duration_ms, created_at) = row?;
+            let tool: EffectDetectionTool = serde_json::from_str(&tool_str).unwrap_or_default();
+            let effects = serde_json::from_str(&effects_json).unwrap_or_default();
+
+            results.push(EffectDetectionHistoryEntry {
+                id,
+                tool,
+                audio_path,
+                result: EffectDetectionResult {
+                    tool,
+                    effects,
+                    processing_time_ms,
+                    audio_duration_ms,
+                    embeddings: None,
+                },
+                created_at,
+            });
+        }
+
+        Ok(results)
     }
 }
 

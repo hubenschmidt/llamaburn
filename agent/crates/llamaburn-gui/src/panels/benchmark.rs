@@ -9,12 +9,12 @@ use tracing::{debug, info, warn};
 
 use llamaburn_core::{
     AudioBenchmarkConfig, AudioBenchmarkResult, AudioMode, AudioSource, BenchmarkConfig,
-    BenchmarkMetrics, BenchmarkType, WhisperModel,
+    BenchmarkMetrics, BenchmarkType, EffectDetectionResult, EffectDetectionTool, WhisperModel,
 };
 use llamaburn_services::{
     get_audio_duration_ms, AudioHistoryEntry, BenchmarkEvent, BenchmarkHistoryEntry,
-    BenchmarkService, BenchmarkSummary, HistoryService, ModelInfo, ModelInfoService, OllamaClient,
-    OllamaError, WhisperService,
+    BenchmarkService, BenchmarkSummary, EffectDetectionService, HistoryService, ModelInfo,
+    ModelInfoService, OllamaClient, OllamaError, WhisperService,
 };
 
 /// UI-level audio source mode (simpler than AudioSource for UI state)
@@ -101,6 +101,8 @@ pub enum LiveTranscriptionEvent {
     StreamOutput(String),
     /// GPU metrics update
     GpuMetrics(llamaburn_services::GpuMetrics),
+    /// Effect detection result
+    FxDetection(EffectDetectionResult),
     /// Error occurred
     Error(String),
     /// Recording stopped
@@ -252,6 +254,14 @@ pub struct BenchmarkPanel {
     show_effects_ui: bool,
     #[cfg(feature = "audio-input")]
     effects_rack_expanded: bool,
+
+    // Effect detection state
+    selected_effect_tool: EffectDetectionTool,
+    effect_detection_result: Option<EffectDetectionResult>,
+    effect_detection_running: bool,
+    effect_detection_rx: Option<Receiver<Result<EffectDetectionResult, String>>>,
+    effect_tool_availability: std::collections::HashMap<EffectDetectionTool, bool>,
+    effect_tool_check_rx: Option<Receiver<(EffectDetectionTool, bool)>>,
 }
 
 /// Events from async audio benchmark
@@ -272,7 +282,7 @@ impl BenchmarkPanel {
         let ollama = OllamaClient::default();
         let model_rx = Some(ollama.fetch_models_async());
 
-        Self {
+        let mut panel = Self {
             models: vec![],
             selected_model: String::new(),
             loading_models: true,
@@ -372,6 +382,47 @@ impl BenchmarkPanel {
             show_effects_ui: false,
             #[cfg(feature = "audio-input")]
             effects_rack_expanded: true,
+
+            // Effect detection
+            selected_effect_tool: EffectDetectionTool::default(),
+            effect_detection_result: None,
+            effect_detection_running: false,
+            effect_detection_rx: None,
+            effect_tool_availability: std::collections::HashMap::new(),
+            effect_tool_check_rx: None,
+        };
+
+        // Start async tool availability check on startup
+        panel.refresh_effect_tool_availability();
+        panel
+    }
+
+    /// Check tool availability from cache, or return false if not yet checked
+    fn is_effect_tool_available(&self, tool: EffectDetectionTool) -> bool {
+        self.effect_tool_availability.get(&tool).copied().unwrap_or(false)
+    }
+
+    /// Refresh effect detection tool availability (runs in background thread)
+    fn refresh_effect_tool_availability(&mut self) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.effect_tool_check_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            for tool in EffectDetectionTool::all() {
+                let available = EffectDetectionService::is_tool_available(*tool);
+                let _ = tx.send((*tool, available));
+            }
+        });
+    }
+
+    /// Poll for tool availability check results
+    fn poll_effect_tool_availability(&mut self) {
+        let Some(rx) = &self.effect_tool_check_rx else {
+            return;
+        };
+
+        while let Ok((tool, available)) = rx.try_recv() {
+            self.effect_tool_availability.insert(tool, available);
         }
     }
 
@@ -548,10 +599,45 @@ impl BenchmarkPanel {
         }
     }
 
+    fn poll_effect_detection(&mut self) {
+        let Some(rx) = self.effect_detection_rx.take() else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(result) => {
+                self.effect_detection_running = false;
+                match result {
+                    Ok(detection_result) => {
+                        info!(
+                            "Effect detection complete: {} effects found",
+                            detection_result.effects.len()
+                        );
+                        self.effect_detection_result = Some(detection_result);
+                    }
+                    Err(e) => {
+                        warn!("Effect detection failed: {}", e);
+                        self.error = Some(format!("Effect detection failed: {}", e));
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                // Still running, put the receiver back
+                self.effect_detection_rx = Some(rx);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.effect_detection_running = false;
+                self.error = Some("Effect detection thread disconnected".to_string());
+            }
+        }
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.poll_models();
         self.poll_benchmark();
         self.poll_audio_benchmark();
+        self.poll_effect_detection();
+        self.poll_effect_tool_availability();
         #[cfg(feature = "audio-input")]
         self.poll_live_transcription();
         #[cfg(feature = "audio-input")]
@@ -863,9 +949,11 @@ impl BenchmarkPanel {
                 );
 
                 if response.clicked() {
-                    [Self::start_live_monitor, Self::stop_live_monitor][monitor_active as usize](
-                        self,
-                    );
+                    // Toggle monitoring - works during recording too
+                    match monitor_active {
+                        true => self.stop_live_monitor(),
+                        false => self.start_live_monitor(),
+                    }
                 }
 
                 let tooltips = ["Enable live monitoring", "Disable live monitoring"];
@@ -893,8 +981,8 @@ impl BenchmarkPanel {
             .num_columns(2)
             .spacing([10.0, 8.0])
             .show(ui, |ui| {
-                // Whisper model selector
-                ui.label("Model:");
+                // Whisper model selector (for STT)
+                ui.label("STT Model:");
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(!disabled, |ui| {
                         let selected_text = self
@@ -926,6 +1014,39 @@ impl BenchmarkPanel {
                     {
                         self.unload_whisper_model();
                     }
+                });
+                ui.end_row();
+
+                // Effect detection tool selector
+                ui.label("FX Detect:");
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(!disabled, |ui| {
+                        egui::ComboBox::from_id_salt("effect_tool")
+                            .selected_text(self.selected_effect_tool.label())
+                            .show_ui(ui, |ui| {
+                                for tool in EffectDetectionTool::all() {
+                                    if ui
+                                        .selectable_label(
+                                            self.selected_effect_tool == *tool,
+                                            tool.label(),
+                                        )
+                                        .on_hover_text(tool.description())
+                                        .clicked()
+                                    {
+                                        self.selected_effect_tool = *tool;
+                                    }
+                                }
+                            });
+                    });
+
+                    // Tool availability indicator (cached)
+                    let available = self.is_effect_tool_available(self.selected_effect_tool);
+                    let (color, text) = if available {
+                        (egui::Color32::GREEN, "Ready")
+                    } else {
+                        (egui::Color32::YELLOW, "Not installed")
+                    };
+                    ui.colored_label(color, text);
                 });
                 ui.end_row();
 
@@ -1011,9 +1132,9 @@ impl BenchmarkPanel {
                     ui.end_row();
                 }
 
-                // Model download status
+                // STT model download status
                 if let Some(model) = self.whisper_model {
-                    ui.label("Status:");
+                    ui.label("STT Status:");
                     let downloaded = self.whisper_service.is_model_downloaded(model);
                     if downloaded {
                         ui.colored_label(egui::Color32::GREEN, "Model ready");
@@ -1040,74 +1161,44 @@ impl BenchmarkPanel {
 
         ui.add_space(10.0);
 
-        // Whisper feature check
-        if !WhisperService::is_whisper_enabled() {
-            ui.colored_label(
-                egui::Color32::RED,
-                "Whisper not enabled. Build with --features whisper-gpu",
-            );
-            return;
+        // Transport controls
+        self.render_transport_controls(ui);
+
+        // Effect detection results
+        if let Some(result) = &self.effect_detection_result {
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new("Detected Effects").strong());
+            ui.separator();
+
+            if result.effects.is_empty() {
+                ui.label("No effects detected");
+            } else {
+                egui::Grid::new("effects_results_grid")
+                    .num_columns(2)
+                    .spacing([20.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.strong("Effect");
+                        ui.strong("Confidence");
+                        ui.end_row();
+
+                        for effect in &result.effects {
+                            ui.label(&effect.name);
+                            ui.add(
+                                egui::ProgressBar::new(effect.confidence)
+                                    .text(format!("{:.0}%", effect.confidence * 100.0)),
+                            );
+                            ui.end_row();
+                        }
+                    });
+            }
+
+            ui.add_space(5.0);
+            ui.label(format!(
+                "Processing: {:.1}ms | Tool: {}",
+                result.processing_time_ms,
+                result.tool.label()
+            ));
         }
-
-        ui.horizontal(|ui| {
-            let model_ready = self
-                .whisper_model
-                .map(|m| self.whisper_service.is_model_downloaded(m))
-                .unwrap_or(false);
-
-            let source_ready = match self.audio_source_mode {
-                AudioSourceMode::File => self.audio_file_path.is_some(),
-                #[cfg(feature = "audio-input")]
-                AudioSourceMode::Capture | AudioSourceMode::LiveStream => {
-                    self.selected_device_id.is_some()
-                }
-                #[cfg(not(feature = "audio-input"))]
-                _ => false,
-            };
-
-            let can_run =
-                !self.running && source_ready && self.whisper_model.is_some() && model_ready;
-
-            let button_text = match self.audio_source_mode {
-                AudioSourceMode::File => "Run Audio Benchmark",
-                AudioSourceMode::Capture => "Record & Benchmark",
-                AudioSourceMode::LiveStream => "Start Live Transcription",
-            };
-
-            if ui
-                .add_enabled(can_run, egui::Button::new(button_text))
-                .clicked()
-            {
-                match self.audio_source_mode {
-                    AudioSourceMode::File => self.start_audio_benchmark(),
-                    #[cfg(feature = "audio-input")]
-                    AudioSourceMode::Capture => self.start_capture_benchmark(),
-                    #[cfg(feature = "audio-input")]
-                    AudioSourceMode::LiveStream => self.start_live_transcription(),
-                    #[cfg(not(feature = "audio-input"))]
-                    _ => {}
-                }
-            }
-
-            #[cfg(feature = "audio-input")]
-            if self.running && self.live_recording && ui.button("Stop Recording").clicked() {
-                self.stop_live_transcription();
-            }
-
-            #[cfg(feature = "audio-input")]
-            if self.running && !self.live_recording && ui.button("Cancel").clicked() {
-                self.cancel_benchmark();
-            }
-
-            #[cfg(not(feature = "audio-input"))]
-            if self.running && ui.button("Cancel").clicked() {
-                self.cancel_benchmark();
-            }
-
-            if self.running {
-                ui.spinner();
-            }
-        });
 
 
         // Show audio results if available
@@ -1186,6 +1277,196 @@ impl BenchmarkPanel {
                 self.error = Some(format!("Failed to read audio: {}", e));
             }
         }
+    }
+
+    fn start_effect_detection(&mut self) {
+        let Some(audio_path) = self.audio_file_path.clone() else {
+            return;
+        };
+
+        info!("Starting effect detection: {:?}", audio_path);
+
+        self.effect_detection_running = true;
+        self.effect_detection_result = None;
+
+        let tool = self.selected_effect_tool;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.effect_detection_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            let service = EffectDetectionService::new(tool);
+            let result = service.detect(&audio_path);
+
+            let result = match result {
+                Ok(r) => Ok(r),
+                Err(e) => Err(e.to_string()),
+            };
+            let _ = tx.send(result);
+        });
+    }
+
+    #[cfg(feature = "audio-input")]
+    fn start_effect_detection_capture(&mut self) {
+        use llamaburn_services::AudioInputService;
+
+        let Some(device_id) = self.selected_device_id.clone() else {
+            return;
+        };
+        let duration = self.capture_duration_secs;
+        let tool = self.selected_effect_tool;
+
+        info!(
+            "Starting effect detection capture: device={}, duration={}s, tool={:?}",
+            device_id, duration, tool
+        );
+
+        self.effect_detection_running = true;
+        self.effect_detection_result = None;
+        self.live_output.clear();
+        self.live_output.push_str(&format!(
+            "Effect Detection (Capture)\n\
+             ===========================\n\
+             Tool: {}\n\
+             Device: {}\n\
+             Duration: {}s\n\n\
+             Recording audio...\n",
+            tool.label(),
+            device_id,
+            duration,
+        ));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.effect_detection_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            // Step 1: Capture audio
+            let samples = match AudioInputService::capture(&device_id, duration) {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Capture error: {}", e)));
+                    return;
+                }
+            };
+
+            // Step 2: Save to temp file
+            let temp_path = std::env::temp_dir().join("llamaburn_capture.wav");
+            if let Err(e) = Self::save_samples_to_wav(&samples, 16000, &temp_path) {
+                let _ = tx.send(Err(format!("Failed to save audio: {}", e)));
+                return;
+            }
+
+            // Step 3: Run effect detection
+            let service = EffectDetectionService::new(tool);
+            let result = service.detect(&temp_path);
+
+            // Cleanup temp file
+            let _ = std::fs::remove_file(&temp_path);
+
+            let result = match result {
+                Ok(r) => Ok(r),
+                Err(e) => Err(e.to_string()),
+            };
+            let _ = tx.send(result);
+        });
+    }
+
+    #[cfg(feature = "audio-input")]
+    fn start_effect_detection_live(&mut self) {
+        use llamaburn_services::AudioInputService;
+
+        let Some(device_id) = self.selected_device_id.clone() else {
+            return;
+        };
+        let tool = self.selected_effect_tool;
+        let chunk_duration = 5; // Analyze 5-second chunks
+
+        info!(
+            "Starting live effect detection: device={}, tool={:?}",
+            device_id, tool
+        );
+
+        self.effect_detection_running = true;
+        self.effect_detection_result = None;
+        self.live_recording = true;
+        self.waveform_peaks.clear();
+        self.recording_start = Some(std::time::Instant::now());
+        self.live_output.clear();
+        self.live_output.push_str(&format!(
+            "Live Effect Detection\n\
+             =====================\n\
+             Tool: {}\n\
+             Device: {}\n\
+             Analyzing {}s chunks...\n\n",
+            tool.label(),
+            device_id,
+            chunk_duration,
+        ));
+
+        // Start level monitor for waveform display
+        self.start_level_monitor();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.effect_detection_rx = Some(rx);
+
+        // For live mode, capture one chunk and analyze it
+        // (continuous live detection would need a more complex streaming architecture)
+        std::thread::spawn(move || {
+            // Capture a chunk
+            let samples = match AudioInputService::capture(&device_id, chunk_duration) {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Capture error: {}", e)));
+                    return;
+                }
+            };
+
+            // Save to temp file
+            let temp_path = std::env::temp_dir().join("llamaburn_live.wav");
+            if let Err(e) = Self::save_samples_to_wav(&samples, 16000, &temp_path) {
+                let _ = tx.send(Err(format!("Failed to save audio: {}", e)));
+                return;
+            }
+
+            // Run effect detection
+            let service = EffectDetectionService::new(tool);
+            let result = service.detect(&temp_path);
+
+            // Cleanup
+            let _ = std::fs::remove_file(&temp_path);
+
+            let result = match result {
+                Ok(r) => Ok(r),
+                Err(e) => Err(e.to_string()),
+            };
+            let _ = tx.send(result);
+        });
+    }
+
+    #[cfg(feature = "audio-input")]
+    fn save_samples_to_wav(samples: &[f32], sample_rate: u32, path: &std::path::Path) -> Result<(), String> {
+        use hound::{WavSpec, WavWriter};
+
+        let spec = WavSpec {
+            channels: 1,
+            sample_rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+
+        let mut writer = WavWriter::create(path, spec)
+            .map_err(|e| format!("Failed to create WAV file: {}", e))?;
+
+        for &sample in samples {
+            writer
+                .write_sample(sample)
+                .map_err(|e| format!("Failed to write sample: {}", e))?;
+        }
+
+        writer
+            .finalize()
+            .map_err(|e| format!("Failed to finalize WAV: {}", e))?;
+
+        Ok(())
     }
 
     fn start_audio_benchmark(&mut self) {
@@ -1434,8 +1715,8 @@ impl BenchmarkPanel {
     }
 
     #[cfg(feature = "audio-input")]
-    fn start_live_transcription(&mut self) {
-        use llamaburn_services::AudioInputService;
+    fn start_live_transcription_with_fx(&mut self, run_fx: bool) {
+        use llamaburn_services::{AudioInputService, AudioOutputService};
 
         let Some(device_id) = self.selected_device_id.clone() else {
             self.error = Some("No audio device selected".to_string());
@@ -1446,11 +1727,27 @@ impl BenchmarkPanel {
             return;
         };
 
-        info!("Starting live transcription: device={}", device_id);
+        // Check if monitoring was active - we'll re-enable it during recording
+        let was_monitoring = matches!(self.audio_test_state, AudioTestState::Monitoring);
+
+        // Stop existing monitor (we'll start our own)
+        self.stop_live_monitor();
+
+        let fx_tool = if run_fx {
+            Some(self.selected_effect_tool)
+        } else {
+            None
+        };
+
+        info!(
+            "Starting live transcription: device={}, fx={:?}, monitor={}",
+            device_id, fx_tool, was_monitoring
+        );
 
         // Reset state
         self.live_recording = true;
         self.running = true;
+        self.effect_detection_running = run_fx;
         self.error = None;
         self.waveform_peaks.clear();
         self.transcription_segments.clear();
@@ -1458,12 +1755,12 @@ impl BenchmarkPanel {
         self.live_output.clear();
         self.progress = "Recording...".to_string();
 
-        // Create channels
+        // Create channels for processing
         let (audio_tx, audio_rx) = std::sync::mpsc::channel::<Vec<f32>>();
         let (event_tx, event_rx) = std::sync::mpsc::channel::<LiveTranscriptionEvent>();
         self.live_transcription_rx = Some(event_rx);
 
-        // Start audio stream
+        // Start 16kHz audio stream for processing
         let stream_handle = match AudioInputService::start_stream(&device_id, audio_tx) {
             Ok(h) => h,
             Err(e) => {
@@ -1475,6 +1772,32 @@ impl BenchmarkPanel {
         };
         self.live_stream_handle = Some(stream_handle);
 
+        // If monitoring was active, start a separate raw stream for monitoring output
+        if was_monitoring {
+            let (monitor_tx, monitor_rx) = std::sync::mpsc::channel::<Vec<f32>>();
+            if let Ok((monitor_stream, sample_rate, channels)) =
+                AudioInputService::start_stream_raw(&device_id, monitor_tx)
+            {
+                let latency = self.playback_latency_ms;
+                let effect_chain = Some(self.effect_chain.clone());
+                if let Ok(monitor_handle) = AudioOutputService::start_monitor_with_effects(
+                    monitor_rx,
+                    sample_rate,
+                    channels,
+                    latency,
+                    effect_chain,
+                ) {
+                    // Store handles - we'll clean these up when recording stops
+                    // Use a dummy field or just let them live until stop_recording
+                    self.monitor_handle = Some(monitor_handle);
+                    // Note: monitor_stream handle is dropped here but that's ok,
+                    // the actual stream continues until monitor_rx is dropped
+                    std::mem::forget(monitor_stream); // Keep stream alive
+                }
+            }
+            self.audio_test_state = AudioTestState::Monitoring;
+        }
+
         // Spawn processing thread with effect chain
         let event_tx_clone = event_tx.clone();
         let effect_chain = self.effect_chain.clone();
@@ -1483,7 +1806,10 @@ impl BenchmarkPanel {
 
             // Load the model
             if let Err(e) = service.load_model(model) {
-                let _ = event_tx_clone.send(LiveTranscriptionEvent::Error(format!("Failed to load model: {}", e)));
+                let _ = event_tx_clone.send(LiveTranscriptionEvent::Error(format!(
+                    "Failed to load model: {}",
+                    e
+                )));
                 return;
             }
 
@@ -1499,11 +1825,12 @@ impl BenchmarkPanel {
 
             loop {
                 // Receive audio chunk (with timeout to check for stop)
-                let mut samples = match audio_rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                    Ok(s) => s,
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                };
+                let mut samples =
+                    match audio_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                        Ok(s) => s,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
 
                 // Apply effects chain to audio before processing
                 if let Ok(mut chain) = effect_chain.lock() {
@@ -1511,11 +1838,12 @@ impl BenchmarkPanel {
                 }
 
                 // Compute peaks for waveform display (downsample to ~100 peaks per chunk)
-                let peaks = Self::compute_waveform_peaks(&samples, 100);
+                let peaks = Self::compute_waveform_peaks(&samples, 500);
                 let _ = event_tx_clone.send(LiveTranscriptionEvent::AudioPeaks(peaks));
 
                 // Calculate RMS for VAD
-                let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+                let rms =
+                    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
 
                 // Track silence duration
                 if rms < silence_threshold {
@@ -1576,6 +1904,28 @@ impl BenchmarkPanel {
                     }
                 }
 
+                // Run FX detection on the same chunk if enabled
+                if let Some(tool) = fx_tool {
+                    // Save chunk to temp file for FX analysis
+                    let temp_path = std::env::temp_dir().join("llamaburn_fx_chunk.wav");
+                    if Self::save_samples_to_wav(&chunk, 16000, &temp_path).is_ok() {
+                        let fx_service = EffectDetectionService::new(tool);
+                        match fx_service.detect(&temp_path) {
+                            Ok(result) => {
+                                let _ =
+                                    event_tx_clone.send(LiveTranscriptionEvent::FxDetection(result));
+                            }
+                            Err(e) => {
+                                let _ = event_tx_clone.send(LiveTranscriptionEvent::Error(format!(
+                                    "FX detection: {}",
+                                    e
+                                )));
+                            }
+                        }
+                        let _ = std::fs::remove_file(&temp_path);
+                    }
+                }
+
                 chunk_start_ms = chunk_end_ms;
             }
 
@@ -1618,7 +1968,7 @@ impl BenchmarkPanel {
                 LiveTranscriptionEvent::AudioPeaks(peaks) => {
                     self.waveform_peaks.extend(peaks);
                     // Keep last ~10 seconds worth of peaks (assuming ~100 peaks per 5s chunk)
-                    while self.waveform_peaks.len() > 400 {
+                    while self.waveform_peaks.len() > 3000 {
                         self.waveform_peaks.pop_front();
                     }
                 }
@@ -1632,12 +1982,35 @@ impl BenchmarkPanel {
                 LiveTranscriptionEvent::GpuMetrics(_metrics) => {
                     // TODO: Display GPU metrics
                 }
+                LiveTranscriptionEvent::FxDetection(result) => {
+                    // Append FX detection results to live output
+                    self.live_output.push_str("\n--- Effect Detection ---\n");
+                    self.live_output
+                        .push_str(&format!("Tool: {}\n", result.tool.label()));
+                    self.live_output.push_str(&format!(
+                        "Processing: {:.0}ms\n",
+                        result.processing_time_ms
+                    ));
+                    if result.effects.is_empty() {
+                        self.live_output.push_str("No effects detected\n");
+                    } else {
+                        for effect in &result.effects {
+                            self.live_output.push_str(&format!(
+                                "  • {} ({:.0}%)\n",
+                                effect.name,
+                                effect.confidence * 100.0
+                            ));
+                        }
+                    }
+                    self.effect_detection_result = Some(result);
+                }
                 LiveTranscriptionEvent::Error(e) => {
                     self.error = Some(e);
                 }
                 LiveTranscriptionEvent::Stopped => {
                     self.live_recording = false;
                     self.running = false;
+                    self.effect_detection_running = false;
                 }
             }
         }
@@ -1701,26 +2074,34 @@ impl BenchmarkPanel {
         let width = rect.width();
         let height = rect.height() / 2.0 - 4.0;
 
+        // Auto-scale: find max amplitude and normalize display
+        let max_amplitude = self
+            .waveform_peaks
+            .iter()
+            .map(|(min, max)| min.abs().max(max.abs()))
+            .fold(0.0f32, f32::max)
+            .max(0.001); // Avoid division by zero
+
+        // Scale factor: quiet audio gets amplified, loud audio stays at 1.0
+        let scale = (0.8 / max_amplitude).min(50.0); // Cap at 50x gain
+
+        // Audacity-style: draw thin vertical lines, 1 pixel each
+        // Map peaks to pixel positions, drawing one line per pixel
+        let waveform_color = egui::Color32::from_rgb(100, 180, 255); // Light blue
+
         for (i, (min, max)) in self.waveform_peaks.iter().enumerate() {
             let x = rect.left() + (i as f32 / num_peaks.max(1) as f32) * width;
 
-            // Scale samples (-1.0 to 1.0) to pixel heights
-            let min_y = center_y - min * height;
-            let max_y = center_y - max * height;
+            // Scale samples with auto-gain
+            let scaled_min = (min * scale).clamp(-1.0, 1.0);
+            let scaled_max = (max * scale).clamp(-1.0, 1.0);
+            let min_y = center_y - scaled_min * height;
+            let max_y = center_y - scaled_max * height;
 
-            // Color based on amplitude (louder = brighter, red on clipping)
-            let amplitude = (max - min).abs();
-            let clipping = amplitude > 1.8;
-            let intensity = (amplitude * 200.0).min(255.0) as u8;
-            let color = if clipping {
-                egui::Color32::from_rgb(255, 50, 50) // Red for clipping
-            } else {
-                egui::Color32::from_rgb(50, 150_u8.saturating_add(intensity / 2), 50_u8.saturating_add(intensity))
-            };
-
+            // Draw thin vertical line from min to max
             painter.line_segment(
                 [egui::pos2(x, min_y), egui::pos2(x, max_y)],
-                egui::Stroke::new(1.5, color),
+                egui::Stroke::new(1.0, waveform_color),
             );
         }
 
@@ -1749,6 +2130,7 @@ impl BenchmarkPanel {
     }
 
     fn render_model_downloads(&mut self, ui: &mut egui::Ui) {
+        // Whisper Models section
         ui.label(egui::RichText::new("Whisper Models").strong());
         ui.add_space(5.0);
 
@@ -1785,6 +2167,66 @@ impl BenchmarkPanel {
         if let Some(model) = model_to_download {
             self.download_whisper_model(model);
         }
+
+        // Effect Detection Tools section
+        ui.add_space(15.0);
+        ui.separator();
+        ui.add_space(5.0);
+        ui.label(egui::RichText::new("Effect Detection").strong());
+        ui.add_space(5.0);
+
+        let mut tool_to_install: Option<EffectDetectionTool> = None;
+
+        egui::Grid::new("effect_detection_grid")
+            .num_columns(3)
+            .spacing([10.0, 4.0])
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new("Tool").small());
+                ui.label(egui::RichText::new("Status").small());
+                ui.label("");
+                ui.end_row();
+
+                for tool in EffectDetectionTool::all() {
+                    ui.label(tool.label());
+
+                    let available = self.is_effect_tool_available(*tool);
+                    if available {
+                        ui.colored_label(egui::Color32::GREEN, "Ready");
+                        ui.label(""); // Empty cell
+                    } else {
+                        ui.colored_label(egui::Color32::GRAY, "—");
+                        if ui.link("Install").clicked() {
+                            tool_to_install = Some(*tool);
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
+
+        if let Some(tool) = tool_to_install {
+            self.install_effect_tool(tool);
+        }
+
+        // Refresh link
+        ui.horizontal(|ui| {
+            if ui.small_button("Refresh").clicked() {
+                self.refresh_effect_tool_availability();
+            }
+            if self.effect_tool_availability.is_empty() {
+                ui.small("(click to check)");
+            }
+        });
+    }
+
+    fn install_effect_tool(&mut self, tool: EffectDetectionTool) {
+        let instructions = EffectDetectionService::install_instructions(tool);
+
+        info!("Showing install instructions for: {:?}", tool);
+        self.live_output = format!(
+            "Install {} with:\n\n{}\n\nRun this in your terminal to install the Python package.",
+            tool.label(),
+            instructions
+        );
     }
 
     fn download_whisper_model(&mut self, model: WhisperModel) {
@@ -1825,12 +2267,12 @@ impl BenchmarkPanel {
             .auto_shrink([false, false])
             .stick_to_bottom(true)
             .show(ui, |ui| {
+                // Using &str makes it read-only, interactive(true) allows text selection
                 ui.add(
                     egui::TextEdit::multiline(&mut self.live_output.as_str())
                         .font(egui::TextStyle::Monospace)
                         .desired_width(f32::INFINITY)
-                        .desired_rows(20)
-                        .interactive(false),
+                        .desired_rows(20),
                 );
             });
     }
@@ -1851,6 +2293,153 @@ impl BenchmarkPanel {
         }
 
         self.render_rankings(ui);
+    }
+
+    fn render_transport_controls(&mut self, ui: &mut egui::Ui) {
+        let is_recording = self.running || self.effect_detection_running;
+        #[cfg(feature = "audio-input")]
+        let is_recording = is_recording || self.live_recording;
+
+        // Check if we can record
+        let source_ready = match self.audio_source_mode {
+            AudioSourceMode::File => self.audio_file_path.is_some(),
+            #[cfg(feature = "audio-input")]
+            AudioSourceMode::Capture | AudioSourceMode::LiveStream => {
+                self.selected_device_id.is_some()
+            }
+            #[cfg(not(feature = "audio-input"))]
+            _ => false,
+        };
+
+        // Check model readiness
+        let whisper_ready = self
+            .whisper_model
+            .map(|m| self.whisper_service.is_model_downloaded(m))
+            .unwrap_or(false);
+        let fx_ready = self.is_effect_tool_available(self.selected_effect_tool);
+        let any_model_ready = whisper_ready || fx_ready;
+
+        ui.horizontal(|ui| {
+            ui.add_space(10.0);
+
+            // Rewind button (|◀)
+            if ui.add_enabled(false, egui::Button::new("⏮")).on_disabled_hover_text("Rewind (coming soon)").clicked() {
+                // TODO: Implement rewind
+            }
+
+            // Play button (▶)
+            if ui.add_enabled(false, egui::Button::new("▶")).on_disabled_hover_text("Play (coming soon)").clicked() {
+                // TODO: Implement playback
+            }
+
+            // Pause button (⏸)
+            if ui.add_enabled(false, egui::Button::new("⏸")).on_disabled_hover_text("Pause (coming soon)").clicked() {
+                // TODO: Implement pause
+            }
+
+            // Stop button (■)
+            let can_stop = is_recording;
+            if ui.add_enabled(can_stop, egui::Button::new("⏹")).on_hover_text("Stop").clicked() {
+                self.stop_recording();
+            }
+
+            // Record button (●) - red circle
+            let record_color = if is_recording {
+                egui::Color32::RED
+            } else {
+                egui::Color32::from_rgb(180, 60, 60)
+            };
+
+            let can_record = !is_recording && source_ready && any_model_ready;
+            let record_btn = egui::Button::new(
+                egui::RichText::new("⏺").color(record_color).size(18.0)
+            );
+
+            let record_hover = match (source_ready, any_model_ready) {
+                (false, _) => "Select audio source first",
+                (_, false) => "Select and download a model first",
+                _ => "Start recording",
+            };
+
+            if ui.add_enabled(can_record, record_btn).on_hover_text(record_hover).clicked() {
+                self.start_recording();
+            }
+
+            // Forward button (▶|)
+            if ui.add_enabled(false, egui::Button::new("⏭")).on_disabled_hover_text("Forward (coming soon)").clicked() {
+                // TODO: Implement forward
+            }
+
+            ui.add_space(10.0);
+
+            // Status indicator
+            if is_recording {
+                ui.spinner();
+                ui.label("Recording...");
+            }
+        });
+    }
+
+    fn start_recording(&mut self) {
+        let whisper_ready = self
+            .whisper_model
+            .map(|m| self.whisper_service.is_model_downloaded(m))
+            .unwrap_or(false)
+            && WhisperService::is_whisper_enabled();
+        let fx_ready = self.is_effect_tool_available(self.selected_effect_tool);
+
+        match self.audio_source_mode {
+            AudioSourceMode::File => {
+                // For file mode, run both if both ready
+                if whisper_ready {
+                    self.start_audio_benchmark();
+                }
+                if fx_ready {
+                    self.start_effect_detection();
+                }
+            }
+            #[cfg(feature = "audio-input")]
+            AudioSourceMode::Capture => {
+                if whisper_ready {
+                    self.start_capture_benchmark();
+                }
+                if fx_ready {
+                    self.start_effect_detection_capture();
+                }
+            }
+            #[cfg(feature = "audio-input")]
+            AudioSourceMode::LiveStream => {
+                // For live mode, prioritize STT (it has its own waveform)
+                // FX detection runs as a side task on captured chunks
+                if whisper_ready {
+                    self.start_live_transcription_with_fx(fx_ready);
+                } else if fx_ready {
+                    self.start_effect_detection_live();
+                }
+            }
+            #[cfg(not(feature = "audio-input"))]
+            _ => {}
+        }
+    }
+
+    fn stop_recording(&mut self) {
+        self.running = false;
+        self.effect_detection_running = false;
+        #[cfg(feature = "audio-input")]
+        {
+            self.live_recording = false;
+            self.recording_start = None; // Clear timer
+            // Stop live stream if active
+            if let Some(handle) = self.live_stream_handle.take() {
+                handle.stop();
+            }
+            // Stop monitor that was started with recording
+            if let Some(handle) = self.monitor_handle.take() {
+                handle.stop();
+            }
+            self.audio_test_state = AudioTestState::Idle;
+        }
+        self.progress = "Stopped".to_string();
     }
 
     fn start_benchmark(&mut self) {
@@ -2388,6 +2977,19 @@ impl BenchmarkPanel {
         // Peak hold behavior - take max of current and new
         self.input_levels.0 = self.input_levels.0.max(l);
         self.input_levels.1 = self.input_levels.1.max(r);
+
+        // Also populate waveform_peaks when recording (for effect detection or any live mode)
+        if self.live_recording {
+            // Convert stereo levels to waveform format (min, max around center)
+            let peak = l.max(r);
+            self.waveform_peaks.push_back((-peak, peak));
+
+            // Cap waveform size (roughly 10 seconds at 60fps)
+            const MAX_PEAKS: usize = 3000;
+            while self.waveform_peaks.len() > MAX_PEAKS {
+                self.waveform_peaks.pop_front();
+            }
+        }
     }
 
     #[cfg(feature = "audio-input")]

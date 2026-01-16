@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Audio benchmark modes - designed for future expansion
@@ -6,6 +7,7 @@ use std::path::PathBuf;
 pub enum AudioMode {
     #[default]
     Stt,               // Speech-to-Text (Whisper)
+    EffectDetection,   // Audio effect detection (Fx-Encoder++, OpenAmp, LLM2Fx)
     Tts,               // Text-to-Speech
     MusicSeparation,   // Demucs stem isolation
     MusicTranscription,// Basic Pitch note detection
@@ -17,6 +19,7 @@ impl AudioMode {
     pub fn label(&self) -> &'static str {
         match self {
             AudioMode::Stt => "STT",
+            AudioMode::EffectDetection => "Effect Detection",
             AudioMode::Tts => "TTS",
             AudioMode::MusicSeparation => "Music Separation",
             AudioMode::MusicTranscription => "Music Transcription",
@@ -26,12 +29,13 @@ impl AudioMode {
     }
 
     pub fn is_implemented(&self) -> bool {
-        matches!(self, AudioMode::Stt)
+        matches!(self, AudioMode::Stt | AudioMode::EffectDetection)
     }
 
     pub fn all() -> &'static [AudioMode] {
         &[
             AudioMode::Stt,
+            AudioMode::EffectDetection,
             AudioMode::Tts,
             AudioMode::MusicSeparation,
             AudioMode::MusicTranscription,
@@ -213,6 +217,94 @@ impl AudioBenchmarkResult {
             max_rtf,
             avg_processing_ms,
             iterations: metrics.len() as u32,
+        }
+    }
+}
+
+// === Effect Detection Types ===
+
+/// Available audio effect detection tools
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum EffectDetectionTool {
+    #[default]
+    FxEncoderPlusPlus,  // Sony Research - best documented
+    OpenAmp,            // Crowd-sourced effect models
+    Llm2FxTools,        // LLM-based effect prediction
+}
+
+impl EffectDetectionTool {
+    pub fn label(&self) -> &'static str {
+        match self {
+            EffectDetectionTool::FxEncoderPlusPlus => "Fx-Encoder++ (Sony)",
+            EffectDetectionTool::OpenAmp => "OpenAmp",
+            EffectDetectionTool::Llm2FxTools => "LLM2Fx-Tools",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            EffectDetectionTool::FxEncoderPlusPlus => "Contrastive learning for effect representation",
+            EffectDetectionTool::OpenAmp => "Framework for effect detection models",
+            EffectDetectionTool::Llm2FxTools => "LLM-based effect chain prediction",
+        }
+    }
+
+    pub fn all() -> &'static [EffectDetectionTool] {
+        &[
+            EffectDetectionTool::FxEncoderPlusPlus,
+            EffectDetectionTool::OpenAmp,
+            EffectDetectionTool::Llm2FxTools,
+        ]
+    }
+}
+
+/// A detected audio effect with confidence and optional parameters
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectedEffect {
+    pub name: String,
+    pub confidence: f32,
+    pub parameters: Option<HashMap<String, f32>>,
+}
+
+impl DetectedEffect {
+    pub fn new(name: impl Into<String>, confidence: f32) -> Self {
+        Self {
+            name: name.into(),
+            confidence,
+            parameters: None,
+        }
+    }
+
+    pub fn with_params(mut self, params: HashMap<String, f32>) -> Self {
+        self.parameters = Some(params);
+        self
+    }
+}
+
+/// Result from effect detection analysis
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectDetectionResult {
+    pub tool: EffectDetectionTool,
+    pub effects: Vec<DetectedEffect>,
+    pub processing_time_ms: f64,
+    pub audio_duration_ms: f64,
+    pub embeddings: Option<Vec<f32>>,
+}
+
+/// Configuration for effect detection benchmark
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectDetectionConfig {
+    pub tool: EffectDetectionTool,
+    pub audio_path: PathBuf,
+    pub iterations: u32,
+}
+
+impl Default for EffectDetectionConfig {
+    fn default() -> Self {
+        Self {
+            tool: EffectDetectionTool::default(),
+            audio_path: PathBuf::new(),
+            iterations: 1,
         }
     }
 }
