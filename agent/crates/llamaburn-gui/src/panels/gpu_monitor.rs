@@ -5,6 +5,7 @@ use std::sync::mpsc::Receiver;
 pub struct GpuMonitorPanel {
     metrics: GpuMetrics,
     metrics_rx: Receiver<GpuMetrics>,
+    expanded: bool,
 }
 
 impl GpuMonitorPanel {
@@ -15,6 +16,7 @@ impl GpuMonitorPanel {
         Self {
             metrics: GpuMetrics::default(),
             metrics_rx,
+            expanded: true,
         }
     }
 
@@ -27,28 +29,35 @@ impl GpuMonitorPanel {
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.update();
 
-        ui.horizontal(|ui| {
-            ui.heading("GPU Monitor");
-            let status_color = if self.metrics.connected {
-                egui::Color32::GREEN
-            } else {
-                egui::Color32::RED
-            };
-            ui.colored_label(status_color, "●");
+        let status_indicator = match self.metrics.connected {
+            true => "🟢",
+            false => "🔴",
+        };
+        let header_text = format!("📊 GPU Monitor {}", status_indicator);
+
+        let header = egui::CollapsingHeader::new(
+            egui::RichText::new(header_text).strong(),
+        )
+        .default_open(self.expanded)
+        .show(ui, |ui| {
+            self.expanded = true;
+
+            egui::ScrollArea::vertical()
+                .max_height(300.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.metrics.raw_output.as_str())
+                            .font(egui::TextStyle::Monospace)
+                            .desired_width(f32::INFINITY)
+                            .interactive(false),
+                    );
+                });
         });
 
-        ui.separator();
-
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.metrics.raw_output.as_str())
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY)
-                        .interactive(false),
-                );
-            });
+        if !header.fully_open() {
+            self.expanded = false;
+        }
     }
 }
 

@@ -141,6 +141,9 @@ pub struct BenchmarkPanel {
     selected_model: String,
     loading_models: bool,
     model_rx: Option<Receiver<Result<Vec<String>, OllamaError>>>,
+    model_preload_rx: Option<Receiver<Result<(), OllamaError>>>,
+    model_preloading: bool,
+    preloading_model_name: String,
     ollama: OllamaClient,
 
     // Benchmark config
@@ -294,6 +297,9 @@ impl BenchmarkPanel {
             selected_model: String::new(),
             loading_models: true,
             model_rx,
+            model_preload_rx: None,
+            model_preloading: false,
+            preloading_model_name: String::new(),
             ollama,
             benchmark_type: BenchmarkType::default(),
             iterations: 5,
@@ -462,6 +468,43 @@ impl BenchmarkPanel {
         }
     }
 
+    fn poll_model_preload(&mut self) {
+        let Some(rx) = self.model_preload_rx.take() else { return };
+
+        match rx.try_recv() {
+            Ok(result) => {
+                self.model_preloading = false;
+                match result {
+                    Ok(()) => {
+                        self.live_output.push_str(&format!(
+                            "✅ {} loaded into VRAM\n",
+                            self.preloading_model_name
+                        ));
+                    }
+                    Err(e) => {
+                        self.live_output.push_str(&format!(
+                            "❌ Failed to load {}: {}\n",
+                            self.preloading_model_name, e
+                        ));
+                    }
+                }
+                self.preloading_model_name.clear();
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                // Still loading, put receiver back
+                self.model_preload_rx = Some(rx);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.model_preloading = false;
+                self.live_output.push_str(&format!(
+                    "❌ Model preload disconnected for {}\n",
+                    self.preloading_model_name
+                ));
+                self.preloading_model_name.clear();
+            }
+        }
+    }
+
     fn poll_benchmark(&mut self) {
         let Some(rx) = &self.benchmark_rx else { return };
 
@@ -621,6 +664,14 @@ impl BenchmarkPanel {
         match rx.try_recv() {
             Ok(result) => {
                 self.effect_detection_running = false;
+                self.live_recording = false;
+                self.recording_start = None;
+                // Stop level monitor but keep waveform peaks visible
+                #[cfg(feature = "audio-input")]
+                if let Some(handle) = self.level_monitor_handle.take() {
+                    handle.stop();
+                }
+
                 match result {
                     Ok(detection_result) => {
                         info!(
@@ -644,6 +695,7 @@ impl BenchmarkPanel {
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.effect_detection_running = false;
+                self.live_recording = false;
                 self.error = Some("Effect detection thread disconnected".to_string());
             }
         }
@@ -713,7 +765,10 @@ impl BenchmarkPanel {
 
         // LLM Blind Analysis
         if let Some(ref description) = result.llm_description {
-            self.live_output.push_str("🤖 LLM BLIND ANALYSIS\n");
+            let model_info = result.llm_model_used.as_ref()
+                .map(|m| format!(" ({})", m))
+                .unwrap_or_default();
+            self.live_output.push_str(&format!("🤖 LLM BLIND ANALYSIS{}\n", model_info));
             self.live_output.push_str("──────────────────────────────────\n");
             self.live_output.push_str(&format!("  {}\n\n", description));
         }
@@ -727,6 +782,7 @@ impl BenchmarkPanel {
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.poll_models();
+        self.poll_model_preload();
         self.poll_benchmark();
         self.poll_audio_benchmark();
         self.poll_effect_detection();
@@ -809,13 +865,6 @@ impl BenchmarkPanel {
                             self.render_results(ui);
                         });
                     });
-
-                    // Full-width waveform display when live recording
-                    #[cfg(feature = "audio-input")]
-                    if self.live_recording || !self.waveform_peaks.is_empty() {
-                        ui.add_space(10.0);
-                        self.render_waveform_display(ui);
-                    }
                 });
 
             // Resize handle at bottom of config panel
@@ -865,6 +914,13 @@ impl BenchmarkPanel {
 
         if let Some(err) = &self.error {
             ui.colored_label(egui::Color32::RED, format!("Error: {}", err));
+            ui.add_space(5.0);
+        }
+
+        // Waveform display - visible during and after recording
+        #[cfg(feature = "audio-input")]
+        if self.live_recording || !self.waveform_peaks.is_empty() {
+            self.render_waveform_display(ui);
             ui.add_space(5.0);
         }
 
@@ -1237,18 +1293,33 @@ impl BenchmarkPanel {
                                 .selected_text(selected_text)
                                 .show_ui(ui, |ui| {
                                     for model in &self.models {
-                                        if ui
+                                        let clicked = ui
                                             .selectable_label(&self.selected_model == model, model)
-                                            .clicked()
-                                        {
-                                            self.selected_model = model.clone();
-                                        }
+                                            .clicked();
+                                        if !clicked { continue; }
+
+                                        self.selected_model = model.clone();
+                                        // Preload model into VRAM immediately
+                                        self.model_preload_rx = Some(self.ollama.preload_model_async(model));
+                                        self.model_preloading = true;
+                                        self.preloading_model_name = model.clone();
+                                        self.live_output.push_str(&format!(
+                                            "⏳ Loading {} into VRAM...\n",
+                                            model
+                                        ));
                                     }
                                 });
                         });
 
-                        if self.loading_models {
+                        if self.loading_models || self.model_preloading {
                             ui.spinner();
+                        }
+
+                        if self.model_preloading {
+                            ui.colored_label(
+                                egui::Color32::YELLOW,
+                                "Loading...",
+                            );
                         }
 
                         // Refresh button
@@ -1538,16 +1609,20 @@ impl BenchmarkPanel {
         self.effect_detection_running = true;
         self.effect_detection_result = None;
         self.live_output.clear();
+        self.live_recording = true;
+        self.waveform_peaks.clear();
+        self.recording_start = Some(std::time::Instant::now());
 
-        let mode_text = if is_dry_wet_mode {
-            "Mode: Recording raw input + applying effects rack\n\n"
-        } else {
-            "\n"
+        // Start level monitor to show waveform during capture
+        self.start_level_monitor();
+
+        let mode_text = match is_dry_wet_mode {
+            true => "Mode: Recording raw input + applying effects rack\n\n",
+            false => "\n",
         };
-        let header = if is_dry_wet_mode {
-            "Effect Detection (Dry+Wet Capture)\n===================================\n"
-        } else {
-            "Effect Detection (Capture)\n===========================\n"
+        let header = match is_dry_wet_mode {
+            true => "Effect Detection (Dry+Wet Capture)\n===================================\n",
+            false => "Effect Detection (Capture)\n===========================\n",
         };
         self.live_output.push_str(&format!(
             "{}Tool: {}\nDevice: {}\nDuration: {}s\n{}Recording audio...\n",
@@ -1635,7 +1710,10 @@ impl BenchmarkPanel {
             // LLM blind analysis (if model selected)
             if let (Ok(ref mut r), Some(ref model)) = (&mut result, &llm_model) {
                 match llamaburn_services::get_llm_blind_analysis(r, model, "http://localhost:11434") {
-                    Ok(description) => r.llm_description = Some(description),
+                    Ok(description) => {
+                        r.llm_description = Some(description);
+                        r.llm_model_used = Some(model.clone());
+                    }
                     Err(e) => tracing::warn!("LLM blind analysis failed: {}", e),
                 }
             }

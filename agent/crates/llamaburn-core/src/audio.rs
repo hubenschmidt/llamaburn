@@ -311,6 +311,7 @@ pub struct EffectDetectionResult {
     pub applied_effects: Option<Vec<AppliedEffect>>,
     pub signal_analysis: Option<SignalAnalysis>,
     pub llm_description: Option<String>,
+    pub llm_model_used: Option<String>,
     pub embedding_distance: Option<f64>,
     pub cosine_similarity: Option<f64>,
 }

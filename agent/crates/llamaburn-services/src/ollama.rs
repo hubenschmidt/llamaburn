@@ -64,6 +64,13 @@ struct GenerateRequest {
     stream: bool,
 }
 
+#[derive(Serialize)]
+struct PreloadRequest {
+    model: String,
+    prompt: String,
+    keep_alive: String,
+}
+
 #[derive(Deserialize)]
 struct GenerateResponse {
     response: String,
@@ -237,6 +244,43 @@ impl OllamaClient {
         let gen_response: GenerateResponse = response.into_json()?;
         info!(model = model_id, "Generated response");
         Ok(gen_response.response)
+    }
+
+    /// Preload a model into VRAM (blocking - can take minutes for large models)
+    #[instrument(skip(self), fields(model = %model_id))]
+    pub fn preload_model(&self, model_id: &str) -> Result<(), OllamaError> {
+        let url = format!("{}/api/generate", self.host);
+        info!("Preloading model into VRAM");
+
+        let request = PreloadRequest {
+            model: model_id.to_string(),
+            prompt: String::new(),
+            keep_alive: "10m".to_string(), // Keep in VRAM for 10 minutes
+        };
+
+        // Long timeout - large models can take minutes to load
+        ureq::post(&url)
+            .timeout(Duration::from_secs(300)) // 5 minutes max
+            .send_json(&request)
+            .map_err(|e| map_ureq_error(e, "Connection refused"))?;
+
+        info!(model = model_id, "Model preloaded into VRAM");
+        Ok(())
+    }
+
+    /// Preload model asynchronously with status callback
+    pub fn preload_model_async(&self, model_id: &str) -> Receiver<Result<(), OllamaError>> {
+        let (tx, rx) = channel();
+        let host = self.host.clone();
+        let model = model_id.to_string();
+
+        std::thread::spawn(move || {
+            let client = OllamaClient::new(host);
+            let result = client.preload_model(&model);
+            let _ = tx.send(result);
+        });
+
+        rx
     }
 }
 

@@ -539,6 +539,7 @@ except Exception as e:
             applied_effects: None,  // Set by caller with ground truth
             signal_analysis,
             llm_description: None,  // Set by caller after LLM call
+            llm_model_used: None,   // Set by caller after LLM call
             embedding_distance,
             cosine_similarity,
         })
