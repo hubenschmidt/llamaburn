@@ -55,7 +55,11 @@ impl AudioSampleFormat {
     }
 
     pub fn all() -> &'static [AudioSampleFormat] {
-        &[AudioSampleFormat::I16, AudioSampleFormat::I24, AudioSampleFormat::F32]
+        &[
+            AudioSampleFormat::I16,
+            AudioSampleFormat::I24,
+            AudioSampleFormat::F32,
+        ]
     }
 
     #[cfg(feature = "audio-input")]
@@ -69,13 +73,12 @@ impl AudioSampleFormat {
 }
 
 /// Common sample rates
-pub const SAMPLE_RATES: &[u32] = &[8000, 11025, 16000, 22050, 44100, 48000, 88200, 96000, 176400, 192000];
+pub const SAMPLE_RATES: &[u32] = &[
+    8000, 11025, 16000, 22050, 44100, 48000, 88200, 96000, 176400, 192000,
+];
 
 /// Recording channel options
-pub const CHANNEL_OPTIONS: &[(u16, &str)] = &[
-    (1, "1 (Mono)"),
-    (2, "2 (Stereo)"),
-];
+pub const CHANNEL_OPTIONS: &[(u16, &str)] = &[(1, "1 (Mono)"), (2, "2 (Stereo)")];
 
 /// Transcription segment with timing info
 #[cfg(feature = "audio-input")]
@@ -94,6 +97,8 @@ pub enum LiveTranscriptionEvent {
     AudioPeaks(Vec<(f32, f32)>),
     /// Completed transcription segment
     Transcription(TranscriptionSegment),
+    /// Streaming output line (verbose token/segment info)
+    StreamOutput(String),
     /// GPU metrics update
     GpuMetrics(llamaburn_services::GpuMetrics),
     /// Error occurred
@@ -120,7 +125,11 @@ pub enum AudioTestState {
 /// Events from audio test
 #[cfg(feature = "audio-input")]
 pub enum AudioTestEvent {
-    RecordingComplete { samples: Vec<f32>, sample_rate: u32, channels: u16 },
+    RecordingComplete {
+        samples: Vec<f32>,
+        sample_rate: u32,
+        channels: u16,
+    },
     Error(String),
 }
 
@@ -218,9 +227,9 @@ pub struct BenchmarkPanel {
     #[cfg(feature = "audio-input")]
     level_monitor_handle: Option<llamaburn_services::StreamHandle>,
     #[cfg(feature = "audio-input")]
-    level_monitor_rx: Option<Receiver<(f32, f32)>>,  // (left_peak, right_peak) 0.0-1.0
+    level_monitor_rx: Option<Receiver<(f32, f32)>>, // (left_peak, right_peak) 0.0-1.0
     #[cfg(feature = "audio-input")]
-    input_levels: (f32, f32),  // Current display levels with decay
+    input_levels: (f32, f32), // Current display levels with decay
 
     // Audio settings dialog
     #[cfg(feature = "audio-input")]
@@ -240,8 +249,13 @@ pub struct BenchmarkPanel {
 /// Events from async audio benchmark
 pub enum AudioBenchmarkEvent {
     Progress(String),
-    IterationComplete { iteration: u32, metrics: llamaburn_core::AudioBenchmarkMetrics },
-    Done { metrics: Vec<llamaburn_core::AudioBenchmarkMetrics> },
+    IterationComplete {
+        iteration: u32,
+        metrics: llamaburn_core::AudioBenchmarkMetrics,
+    },
+    Done {
+        metrics: Vec<llamaburn_core::AudioBenchmarkMetrics>,
+    },
     Error(String),
 }
 
@@ -432,7 +446,9 @@ impl BenchmarkPanel {
     }
 
     fn poll_audio_benchmark(&mut self) {
-        let Some(rx) = self.audio_rx.take() else { return };
+        let Some(rx) = self.audio_rx.take() else {
+            return;
+        };
 
         let mut should_clear = false;
 
@@ -471,8 +487,7 @@ impl BenchmarkPanel {
                     if let Some(first) = metrics.first() {
                         self.live_output.push_str(&format!(
                             "\nTranscription ({} words):\n{}\n",
-                            first.word_count,
-                            first.transcription
+                            first.word_count, first.transcription
                         ));
                     }
 
@@ -568,10 +583,18 @@ impl BenchmarkPanel {
             ui.separator();
             ui.add_space(spacing);
 
-            // Center: Model Info
+            // Center: Model Info + Whisper Models (for Audio mode)
             ui.vertical(|ui| {
                 ui.set_width(info_width);
                 self.render_model_info(ui);
+
+                // Whisper Models for Audio mode
+                if self.benchmark_type == BenchmarkType::Audio {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(5.0);
+                    self.render_model_downloads(ui);
+                }
             });
 
             ui.add_space(spacing);
@@ -584,6 +607,13 @@ impl BenchmarkPanel {
                 self.render_results(ui);
             });
         });
+
+        // Full-width waveform display when live recording
+        #[cfg(feature = "audio-input")]
+        if self.live_recording || !self.waveform_peaks.is_empty() {
+            ui.add_space(10.0);
+            self.render_waveform_display(ui);
+        }
 
         ui.add_space(10.0);
 
@@ -648,7 +678,11 @@ impl BenchmarkPanel {
                 ui.label("Model:");
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(!disabled, |ui| {
-                        let selected_text = match (self.loading_models, self.models.is_empty(), self.selected_model.is_empty()) {
+                        let selected_text = match (
+                            self.loading_models,
+                            self.models.is_empty(),
+                            self.selected_model.is_empty(),
+                        ) {
                             (true, _, _) => "Loading models...",
                             (_, true, _) => "No models found",
                             (_, _, true) => "Select model...",
@@ -743,7 +777,8 @@ impl BenchmarkPanel {
             }
 
             ui.horizontal(|ui| {
-                let button_text = self.selected_device_id
+                let button_text = self
+                    .selected_device_id
                     .as_ref()
                     .and_then(|id| self.audio_devices.iter().find(|d| &d.id == id))
                     .map(|d| {
@@ -774,15 +809,28 @@ impl BenchmarkPanel {
                 let rect = response.rect;
 
                 let colors = [
-                    (egui::Color32::from_rgb(180, 60, 60), egui::Color32::TRANSPARENT),  // Off: red outline, hollow
-                    (egui::Color32::from_rgb(220, 50, 50), egui::Color32::from_rgb(220, 50, 50)),  // On: red filled
+                    (
+                        egui::Color32::from_rgb(180, 60, 60),
+                        egui::Color32::TRANSPARENT,
+                    ), // Off: red outline, hollow
+                    (
+                        egui::Color32::from_rgb(220, 50, 50),
+                        egui::Color32::from_rgb(220, 50, 50),
+                    ), // On: red filled
                 ];
                 let (stroke_color, fill_color) = colors[monitor_active as usize];
 
-                painter.rect(rect.shrink(2.0), 2.0, fill_color, egui::Stroke::new(2.0, stroke_color));
+                painter.rect(
+                    rect.shrink(2.0),
+                    2.0,
+                    fill_color,
+                    egui::Stroke::new(2.0, stroke_color),
+                );
 
                 if response.clicked() {
-                    [Self::start_live_monitor, Self::stop_live_monitor][monitor_active as usize](self);
+                    [Self::start_live_monitor, Self::stop_live_monitor][monitor_active as usize](
+                        self,
+                    );
                 }
 
                 let tooltips = ["Enable live monitoring", "Disable live monitoring"];
@@ -790,7 +838,11 @@ impl BenchmarkPanel {
 
                 // Show "Input Monitor" label when active
                 if monitor_active {
-                    ui.label(egui::RichText::new("Input Monitor").small().color(egui::Color32::from_rgb(220, 50, 50)));
+                    ui.label(
+                        egui::RichText::new("Input Monitor")
+                            .small()
+                            .color(egui::Color32::from_rgb(220, 50, 50)),
+                    );
                 }
             });
 
@@ -810,7 +862,8 @@ impl BenchmarkPanel {
                 ui.label("Model:");
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(!disabled, |ui| {
-                        let selected_text = self.whisper_model
+                        let selected_text = self
+                            .whisper_model
                             .map(|m| m.label())
                             .unwrap_or("Select model...");
 
@@ -818,8 +871,12 @@ impl BenchmarkPanel {
                             .selected_text(selected_text)
                             .show_ui(ui, |ui| {
                                 for model in WhisperModel::all() {
-                                    let label = format!("{} (~{}MB)", model.label(), model.size_mb());
-                                    if ui.selectable_label(self.whisper_model == Some(*model), label).clicked() {
+                                    let label =
+                                        format!("{} (~{}MB)", model.label(), model.size_mb());
+                                    if ui
+                                        .selectable_label(self.whisper_model == Some(*model), label)
+                                        .clicked()
+                                    {
                                         self.whisper_model = Some(*model);
                                     }
                                 }
@@ -828,7 +885,10 @@ impl BenchmarkPanel {
 
                     // Unload button
                     let can_unload = self.whisper_model.is_some() && !self.running;
-                    if ui.add_enabled(can_unload, egui::Button::new("Unload")).clicked() {
+                    if ui
+                        .add_enabled(can_unload, egui::Button::new("Unload"))
+                        .clicked()
+                    {
                         self.unload_whisper_model();
                     }
                 });
@@ -839,11 +899,23 @@ impl BenchmarkPanel {
                 let prev_mode = self.audio_source_mode;
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(!disabled, |ui| {
-                        ui.selectable_value(&mut self.audio_source_mode, AudioSourceMode::File, "File");
+                        ui.selectable_value(
+                            &mut self.audio_source_mode,
+                            AudioSourceMode::File,
+                            "File",
+                        );
                         #[cfg(feature = "audio-input")]
                         {
-                            ui.selectable_value(&mut self.audio_source_mode, AudioSourceMode::Capture, "Capture");
-                            ui.selectable_value(&mut self.audio_source_mode, AudioSourceMode::LiveStream, "Live");
+                            ui.selectable_value(
+                                &mut self.audio_source_mode,
+                                AudioSourceMode::Capture,
+                                "Capture",
+                            );
+                            ui.selectable_value(
+                                &mut self.audio_source_mode,
+                                AudioSourceMode::LiveStream,
+                                "Live",
+                            );
                         }
                         #[cfg(not(feature = "audio-input"))]
                         {
@@ -868,12 +940,16 @@ impl BenchmarkPanel {
                 if self.audio_source_mode == AudioSourceMode::File {
                     ui.label("Audio:");
                     ui.horizontal(|ui| {
-                        if ui.add_enabled(!disabled, egui::Button::new("Select File...")).clicked() {
+                        if ui
+                            .add_enabled(!disabled, egui::Button::new("Select File..."))
+                            .clicked()
+                        {
                             self.pick_audio_file();
                         }
 
                         if let Some(path) = &self.audio_file_path {
-                            let filename = path.file_name()
+                            let filename = path
+                                .file_name()
                                 .and_then(|n| n.to_str())
                                 .unwrap_or("unknown");
                             ui.label(filename);
@@ -893,7 +969,10 @@ impl BenchmarkPanel {
                 #[cfg(feature = "audio-input")]
                 if self.audio_source_mode == AudioSourceMode::Capture {
                     ui.label("Duration:");
-                    ui.add_enabled(!disabled, egui::Slider::new(&mut self.capture_duration_secs, 5..=60).suffix("s"));
+                    ui.add_enabled(
+                        !disabled,
+                        egui::Slider::new(&mut self.capture_duration_secs, 5..=60).suffix("s"),
+                    );
                     ui.end_row();
                 }
 
@@ -910,11 +989,17 @@ impl BenchmarkPanel {
                 }
 
                 ui.label("Iterations:");
-                ui.add_enabled(!disabled, egui::DragValue::new(&mut self.iterations).range(1..=20));
+                ui.add_enabled(
+                    !disabled,
+                    egui::DragValue::new(&mut self.iterations).range(1..=20),
+                );
                 ui.end_row();
 
                 ui.label("Warmup:");
-                ui.add_enabled(!disabled, egui::DragValue::new(&mut self.warmup).range(0..=5));
+                ui.add_enabled(
+                    !disabled,
+                    egui::DragValue::new(&mut self.warmup).range(0..=5),
+                );
                 ui.end_row();
             });
 
@@ -930,22 +1015,23 @@ impl BenchmarkPanel {
         }
 
         ui.horizontal(|ui| {
-            let model_ready = self.whisper_model
+            let model_ready = self
+                .whisper_model
                 .map(|m| self.whisper_service.is_model_downloaded(m))
                 .unwrap_or(false);
 
             let source_ready = match self.audio_source_mode {
                 AudioSourceMode::File => self.audio_file_path.is_some(),
                 #[cfg(feature = "audio-input")]
-                AudioSourceMode::Capture | AudioSourceMode::LiveStream => self.selected_device_id.is_some(),
+                AudioSourceMode::Capture | AudioSourceMode::LiveStream => {
+                    self.selected_device_id.is_some()
+                }
                 #[cfg(not(feature = "audio-input"))]
                 _ => false,
             };
 
-            let can_run = !self.running
-                && source_ready
-                && self.whisper_model.is_some()
-                && model_ready;
+            let can_run =
+                !self.running && source_ready && self.whisper_model.is_some() && model_ready;
 
             let button_text = match self.audio_source_mode {
                 AudioSourceMode::File => "Run Audio Benchmark",
@@ -953,7 +1039,10 @@ impl BenchmarkPanel {
                 AudioSourceMode::LiveStream => "Start Live Transcription",
             };
 
-            if ui.add_enabled(can_run, egui::Button::new(button_text)).clicked() {
+            if ui
+                .add_enabled(can_run, egui::Button::new(button_text))
+                .clicked()
+            {
                 match self.audio_source_mode {
                     AudioSourceMode::File => self.start_audio_benchmark(),
                     #[cfg(feature = "audio-input")]
@@ -985,18 +1074,6 @@ impl BenchmarkPanel {
             }
         });
 
-        // Show waveform display when live recording
-        #[cfg(feature = "audio-input")]
-        if self.live_recording || !self.waveform_peaks.is_empty() {
-            ui.add_space(10.0);
-            self.render_waveform_display(ui);
-        }
-
-        ui.add_space(10.0);
-        ui.separator();
-
-        // Model download manager
-        self.render_model_downloads(ui);
 
         // Show audio results if available
         if let Some(result) = &self.audio_result {
@@ -1005,13 +1082,17 @@ impl BenchmarkPanel {
             ui.label(egui::RichText::new("Audio Results").strong());
 
             // Calculate words per second from first metric
-            let wps = result.metrics.first().map(|m| {
-                if m.processing_time_ms > 0.0 {
-                    m.word_count as f64 / (m.processing_time_ms / 1000.0)
-                } else {
-                    0.0
-                }
-            }).unwrap_or(0.0);
+            let wps = result
+                .metrics
+                .first()
+                .map(|m| {
+                    if m.processing_time_ms > 0.0 {
+                        m.word_count as f64 / (m.processing_time_ms / 1000.0)
+                    } else {
+                        0.0
+                    }
+                })
+                .unwrap_or(0.0);
 
             let speed_label = if result.summary.avg_rtf > 0.0 {
                 format!("{:.0}x real-time", 1.0 / result.summary.avg_rtf)
@@ -1019,14 +1100,27 @@ impl BenchmarkPanel {
                 "—".to_string()
             };
 
-            ui.label(format!("Avg RTF: {:.3}x ({})", result.summary.avg_rtf, speed_label));
-            ui.label(format!("Avg Time: {:.0} ms", result.summary.avg_processing_ms));
-            ui.label(format!("Min/Max RTF: {:.3}/{:.3}", result.summary.min_rtf, result.summary.max_rtf));
+            ui.label(format!(
+                "Avg RTF: {:.3}x ({})",
+                result.summary.avg_rtf, speed_label
+            ));
+            ui.label(format!(
+                "Avg Time: {:.0} ms",
+                result.summary.avg_processing_ms
+            ));
+            ui.label(format!(
+                "Min/Max RTF: {:.3}/{:.3}",
+                result.summary.min_rtf, result.summary.max_rtf
+            ));
             ui.label(format!("WPS: {:.1} words/sec", wps));
             ui.label(format!("Iterations: {}", result.summary.iterations));
 
             if let Some(first) = result.metrics.first() {
-                ui.label(format!("Audio: {:.1}s | Words: {}", first.audio_duration_ms / 1000.0, first.word_count));
+                ui.label(format!(
+                    "Audio: {:.1}s | Words: {}",
+                    first.audio_duration_ms / 1000.0,
+                    first.word_count
+                ));
                 ui.add_space(5.0);
                 ui.label("Transcription:");
                 let preview = if first.transcription.len() > 200 {
@@ -1060,8 +1154,12 @@ impl BenchmarkPanel {
     }
 
     fn start_audio_benchmark(&mut self) {
-        let Some(audio_path) = self.audio_file_path.clone() else { return };
-        let Some(model) = self.whisper_model else { return };
+        let Some(audio_path) = self.audio_file_path.clone() else {
+            return;
+        };
+        let Some(model) = self.whisper_model else {
+            return;
+        };
 
         info!("Starting audio benchmark: {:?}", audio_path);
 
@@ -1120,7 +1218,9 @@ impl BenchmarkPanel {
             };
             if dup2_result == -1 {
                 unsafe { libc::close(old_stderr) };
-                let _ = tx.send(AudioBenchmarkEvent::Error("Failed to redirect stderr".into()));
+                let _ = tx.send(AudioBenchmarkEvent::Error(
+                    "Failed to redirect stderr".into(),
+                ));
                 return;
             }
             drop(stderr_write); // Close write end in this thread
@@ -1132,15 +1232,22 @@ impl BenchmarkPanel {
                 for line in reader.lines() {
                     let Ok(line) = line else { break };
                     // Filter and send interesting lines
-                    if line.contains("whisper_") || line.contains("ggml_") || line.contains("ROCm")
-                       || line.contains("loading") || line.contains("MB") || line.contains("backend")
-                       || line.starts_with("  Device") {
+                    if line.contains("whisper_")
+                        || line.contains("ggml_")
+                        || line.contains("ROCm")
+                        || line.contains("loading")
+                        || line.contains("MB")
+                        || line.contains("backend")
+                        || line.starts_with("  Device")
+                    {
                         let _ = tx_stderr.send(AudioBenchmarkEvent::Progress(line));
                     }
                 }
             });
 
-            let _ = tx.send(AudioBenchmarkEvent::Progress("Loading model...".to_string()));
+            let _ = tx.send(AudioBenchmarkEvent::Progress(
+                "Loading model...".to_string(),
+            ));
 
             let mut service = WhisperService::default();
             let result = service.run_benchmark(model, &audio_path, iterations, warmup, None);
@@ -1176,11 +1283,18 @@ impl BenchmarkPanel {
     fn start_capture_benchmark(&mut self) {
         use llamaburn_services::AudioInputService;
 
-        let Some(device_id) = self.selected_device_id.clone() else { return };
-        let Some(model) = self.whisper_model else { return };
+        let Some(device_id) = self.selected_device_id.clone() else {
+            return;
+        };
+        let Some(model) = self.whisper_model else {
+            return;
+        };
         let duration = self.capture_duration_secs;
 
-        info!("Starting capture benchmark: device={}, duration={}s", device_id, duration);
+        info!(
+            "Starting capture benchmark: device={}, duration={}s",
+            device_id, duration
+        );
 
         self.running = true;
         self.error = None;
@@ -1213,7 +1327,9 @@ impl BenchmarkPanel {
 
         std::thread::spawn(move || {
             // Step 1: Capture audio
-            let _ = tx.send(AudioBenchmarkEvent::Progress("Recording audio...".to_string()));
+            let _ = tx.send(AudioBenchmarkEvent::Progress(
+                "Recording audio...".to_string(),
+            ));
 
             let samples = match AudioInputService::capture(&device_id, duration) {
                 Ok(s) => s,
@@ -1223,18 +1339,26 @@ impl BenchmarkPanel {
                 }
             };
 
-            let _ = tx.send(AudioBenchmarkEvent::Progress(
-                format!("Captured {} samples ({:.1}s at 16kHz)", samples.len(), samples.len() as f64 / 16000.0)
-            ));
+            let _ = tx.send(AudioBenchmarkEvent::Progress(format!(
+                "Captured {} samples ({:.1}s at 16kHz)",
+                samples.len(),
+                samples.len() as f64 / 16000.0
+            )));
 
             // Step 2: Transcribe with benchmark iterations
-            let _ = tx.send(AudioBenchmarkEvent::Progress("Loading model...".to_string()));
+            let _ = tx.send(AudioBenchmarkEvent::Progress(
+                "Loading model...".to_string(),
+            ));
 
             let service = WhisperService::default();
             let mut metrics_vec = Vec::new();
 
             for i in 0..iterations {
-                let _ = tx.send(AudioBenchmarkEvent::Progress(format!("Iteration {} of {}...", i + 1, iterations)));
+                let _ = tx.send(AudioBenchmarkEvent::Progress(format!(
+                    "Iteration {} of {}...",
+                    i + 1,
+                    iterations
+                )));
 
                 match service.transcribe_samples(&samples) {
                     Ok((result, duration)) => {
@@ -1259,13 +1383,18 @@ impl BenchmarkPanel {
                         metrics_vec.push(metrics);
                     }
                     Err(e) => {
-                        let _ = tx.send(AudioBenchmarkEvent::Error(format!("Transcription error: {}", e)));
+                        let _ = tx.send(AudioBenchmarkEvent::Error(format!(
+                            "Transcription error: {}",
+                            e
+                        )));
                         return;
                     }
                 }
             }
 
-            let _ = tx.send(AudioBenchmarkEvent::Done { metrics: metrics_vec });
+            let _ = tx.send(AudioBenchmarkEvent::Done {
+                metrics: metrics_vec,
+            });
         });
     }
 
@@ -1277,11 +1406,10 @@ impl BenchmarkPanel {
             self.error = Some("No audio device selected".to_string());
             return;
         };
-        let Some(_model) = self.whisper_model else {
+        let Some(model) = self.whisper_model else {
             self.error = Some("No Whisper model selected".to_string());
             return;
         };
-        // TODO: Pass model to WhisperService for proper model loading
 
         info!("Starting live transcription: device={}", device_id);
 
@@ -1315,10 +1443,23 @@ impl BenchmarkPanel {
         // Spawn processing thread
         let event_tx_clone = event_tx.clone();
         std::thread::spawn(move || {
-            let service = WhisperService::default();
+            let mut service = WhisperService::default();
+
+            // Load the model
+            if let Err(e) = service.load_model(model) {
+                let _ = event_tx_clone.send(LiveTranscriptionEvent::Error(format!("Failed to load model: {}", e)));
+                return;
+            }
+
             let mut accumulated_samples: Vec<f32> = Vec::new();
             let mut chunk_start_ms: u64 = 0;
-            let chunk_duration_samples = 16000 * 5; // 5 seconds at 16kHz
+            let max_chunk_samples = 16000 * 5; // 5 seconds max at 16kHz
+            let min_chunk_samples = 16000 * 1; // 1 second min for VAD trigger
+
+            // VAD parameters
+            let silence_threshold = 0.01_f32; // RMS threshold for silence
+            let silence_duration_samples = 16000 / 2; // 500ms of silence to trigger
+            let mut consecutive_silence_samples = 0_usize;
 
             loop {
                 // Receive audio chunk (with timeout to check for stop)
@@ -1332,21 +1473,55 @@ impl BenchmarkPanel {
                 let peaks = Self::compute_waveform_peaks(&samples, 100);
                 let _ = event_tx_clone.send(LiveTranscriptionEvent::AudioPeaks(peaks));
 
+                // Calculate RMS for VAD
+                let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+
+                // Track silence duration
+                if rms < silence_threshold {
+                    consecutive_silence_samples += samples.len();
+                } else {
+                    consecutive_silence_samples = 0;
+                }
+
                 // Accumulate samples
                 accumulated_samples.extend(samples);
 
-                // Process when we have enough samples
-                if accumulated_samples.len() < chunk_duration_samples {
+                // Determine if we should process now:
+                // 1. Max chunk size reached (5 seconds), OR
+                // 2. VAD triggered: silence detected for 500ms AND we have at least 1 second of audio
+                let max_reached = accumulated_samples.len() >= max_chunk_samples;
+                let vad_triggered = consecutive_silence_samples >= silence_duration_samples
+                    && accumulated_samples.len() >= min_chunk_samples;
+
+                if !max_reached && !vad_triggered {
                     continue;
                 }
 
-                let chunk: Vec<f32> = accumulated_samples.drain(..chunk_duration_samples).collect();
-                let chunk_end_ms = chunk_start_ms + 5000;
+                // Take all accumulated samples (up to max)
+                let chunk_samples = accumulated_samples.len().min(max_chunk_samples);
+                let chunk: Vec<f32> = accumulated_samples.drain(..chunk_samples).collect();
+                let chunk_duration_ms = (chunk.len() as u64 * 1000) / 16000;
+                let chunk_end_ms = chunk_start_ms + chunk_duration_ms;
 
-                // Transcribe chunk
-                match service.transcribe_samples(&chunk) {
+                // Reset silence counter after processing
+                consecutive_silence_samples = 0;
+
+                // Set up streaming output channel
+                let (stream_tx, stream_rx) = std::sync::mpsc::channel::<String>();
+                let event_tx_stream = event_tx_clone.clone();
+
+                // Spawn thread to forward streaming output
+                std::thread::spawn(move || {
+                    while let Ok(line) = stream_rx.recv() {
+                        let _ = event_tx_stream.send(LiveTranscriptionEvent::StreamOutput(line));
+                    }
+                });
+
+                // Transcribe chunk with streaming output
+                let chunk_duration_secs = chunk_duration_ms as f64 / 1000.0;
+                match service.transcribe_samples_streaming(&chunk, stream_tx) {
                     Ok((result, duration)) => {
-                        let rtf = duration.as_secs_f64() / 5.0;
+                        let rtf = duration.as_secs_f64() / chunk_duration_secs.max(0.001);
                         let segment = TranscriptionSegment {
                             start_ms: chunk_start_ms,
                             end_ms: chunk_end_ms,
@@ -1393,7 +1568,9 @@ impl BenchmarkPanel {
 
     #[cfg(feature = "audio-input")]
     fn poll_live_transcription(&mut self) {
-        let Some(rx) = &self.live_transcription_rx else { return };
+        let Some(rx) = &self.live_transcription_rx else {
+            return;
+        };
 
         while let Ok(event) = rx.try_recv() {
             match event {
@@ -1405,13 +1582,11 @@ impl BenchmarkPanel {
                     }
                 }
                 LiveTranscriptionEvent::Transcription(segment) => {
-                    self.live_output.push_str(&format!(
-                        "[{} → {}] \"{}\"\n",
-                        Self::format_time_ms(segment.start_ms),
-                        Self::format_time_ms(segment.end_ms),
-                        segment.text
-                    ));
                     self.transcription_segments.push(segment);
+                }
+                LiveTranscriptionEvent::StreamOutput(line) => {
+                    self.live_output.push_str(&line);
+                    self.live_output.push('\n');
                 }
                 LiveTranscriptionEvent::GpuMetrics(_metrics) => {
                     // TODO: Display GPU metrics
@@ -1450,9 +1625,12 @@ impl BenchmarkPanel {
                 None => ui.label(label_text),
             };
 
-            let Some(start) = self.recording_start else { return };
+            let Some(start) = self.recording_start else {
+                return;
+            };
             let elapsed = start.elapsed().as_secs_f64();
-            ui.label(format!("{:02}:{:02}.{}",
+            ui.label(format!(
+                "{:02}:{:02}.{}",
                 (elapsed / 60.0) as u32,
                 (elapsed % 60.0) as u32,
                 ((elapsed * 10.0) % 10.0) as u32
@@ -1470,7 +1648,10 @@ impl BenchmarkPanel {
         // Center line
         let center_y = rect.center().y;
         painter.line_segment(
-            [egui::pos2(rect.left(), center_y), egui::pos2(rect.right(), center_y)],
+            [
+                egui::pos2(rect.left(), center_y),
+                egui::pos2(rect.right(), center_y),
+            ],
             egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
         );
 
@@ -1486,10 +1667,15 @@ impl BenchmarkPanel {
             let min_y = center_y - min * height;
             let max_y = center_y - max * height;
 
-            // Color based on amplitude (louder = brighter)
+            // Color based on amplitude (louder = brighter, red on clipping)
             let amplitude = (max - min).abs();
+            let clipping = amplitude > 1.8;
             let intensity = (amplitude * 200.0).min(255.0) as u8;
-            let color = egui::Color32::from_rgb(50, 150 + intensity / 2, 50 + intensity);
+            let color = if clipping {
+                egui::Color32::from_rgb(255, 50, 50) // Red for clipping
+            } else {
+                egui::Color32::from_rgb(50, 150_u8.saturating_add(intensity / 2), 50_u8.saturating_add(intensity))
+            };
 
             painter.line_segment(
                 [egui::pos2(x, min_y), egui::pos2(x, max_y)],
@@ -1497,28 +1683,27 @@ impl BenchmarkPanel {
             );
         }
 
-        // Live transcription output - guard clause
-        let has_output = !self.transcription_segments.is_empty() || !self.live_output.is_empty();
-        if !has_output {
+        // Metrics one-liner below waveform
+        if self.transcription_segments.is_empty() {
             return;
         }
 
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("Live Transcription").strong());
+        let segments = &self.transcription_segments;
+        let avg_rtf: f64 = segments.iter().map(|s| s.rtf).sum::<f64>() / segments.len() as f64;
+        let speed = 1.0 / avg_rtf;
+        let total_audio_secs = segments.last().map(|s| s.end_ms).unwrap_or(0) as f64 / 1000.0;
+        let total_words: usize = segments.iter().map(|s| s.text.split_whitespace().count()).sum();
+        let wps = total_words as f64 / total_audio_secs.max(0.001);
 
-        egui::ScrollArea::vertical()
-            .max_height(150.0)
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                ui.label(&self.live_output);
-            });
-
-        // Metrics
-        let Some(last) = self.transcription_segments.last() else { return };
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label(format!("RTF: {:.2}x", last.rtf));
+            ui.label(format!("RTF: {:.3}x ({:.0}x real-time)", avg_rtf, speed));
             ui.separator();
-            ui.label(format!("Segments: {}", self.transcription_segments.len()));
+            ui.label(format!("Audio: {:.1}s", total_audio_secs));
+            ui.separator();
+            ui.label(format!("Words: {} ({:.1} WPS)", total_words, wps));
+            ui.separator();
+            ui.label(format!("Segments: {}", segments.len()));
         });
     }
 
@@ -1712,7 +1897,9 @@ impl BenchmarkPanel {
     }
 
     fn unload_whisper_model(&mut self) {
-        let Some(model) = self.whisper_model else { return };
+        let Some(model) = self.whisper_model else {
+            return;
+        };
 
         info!("Unloading whisper model: {}", model.label());
 
@@ -1739,10 +1926,13 @@ impl BenchmarkPanel {
             }
 
             // Group devices by card
-            let mut groups: BTreeMap<String, Vec<&llamaburn_services::AudioDevice>> = BTreeMap::new();
+            let mut groups: BTreeMap<String, Vec<&llamaburn_services::AudioDevice>> =
+                BTreeMap::new();
 
             for device in &self.audio_devices {
-                let group_key = device.card_name.clone()
+                let group_key = device
+                    .card_name
+                    .clone()
                     .or_else(|| device.card_id.clone())
                     .unwrap_or_else(|| "System".to_string());
                 groups.entry(group_key).or_default().push(device);
@@ -1796,19 +1986,34 @@ impl BenchmarkPanel {
             AudioTestState::Idle => "🎙️ Test Mic (Record & Play)".to_string(),
         };
 
-        let can_test = self.selected_device_id.is_some() && matches!(self.audio_test_state, AudioTestState::Idle);
+        let can_test = self.selected_device_id.is_some()
+            && matches!(self.audio_test_state, AudioTestState::Idle);
 
-        if ui.add_enabled(can_test, egui::Button::new(&test_label)).clicked() {
+        if ui
+            .add_enabled(can_test, egui::Button::new(&test_label))
+            .clicked()
+        {
             self.start_audio_test();
             ui.close_menu();
         }
 
         // Live Monitor toggle
         let is_monitoring = matches!(self.audio_test_state, AudioTestState::Monitoring);
-        let monitor_label = if is_monitoring { "🎧 Live Monitor ✓" } else { "🎧 Live Monitor" };
-        let can_monitor = self.selected_device_id.is_some() && matches!(self.audio_test_state, AudioTestState::Idle | AudioTestState::Monitoring);
+        let monitor_label = if is_monitoring {
+            "🎧 Live Monitor ✓"
+        } else {
+            "🎧 Live Monitor"
+        };
+        let can_monitor = self.selected_device_id.is_some()
+            && matches!(
+                self.audio_test_state,
+                AudioTestState::Idle | AudioTestState::Monitoring
+            );
 
-        if ui.add_enabled(can_monitor, egui::Button::new(monitor_label)).clicked() {
+        if ui
+            .add_enabled(can_monitor, egui::Button::new(monitor_label))
+            .clicked()
+        {
             [Self::start_live_monitor, Self::stop_live_monitor][is_monitoring as usize](self);
             ui.close_menu();
         }
@@ -1867,7 +2072,9 @@ impl BenchmarkPanel {
     fn start_audio_test(&mut self) {
         use llamaburn_services::{AudioCaptureConfig, AudioInputService};
 
-        let Some(device_id) = self.selected_device_id.clone() else { return };
+        let Some(device_id) = self.selected_device_id.clone() else {
+            return;
+        };
 
         info!("Starting audio test: device={}", device_id);
 
@@ -1889,7 +2096,11 @@ impl BenchmarkPanel {
         std::thread::spawn(move || {
             match AudioInputService::capture_with_config(&device_id, 3, &config) {
                 Ok((samples, sample_rate, channels)) => {
-                    let _ = tx.send(AudioTestEvent::RecordingComplete { samples, sample_rate, channels });
+                    let _ = tx.send(AudioTestEvent::RecordingComplete {
+                        samples,
+                        sample_rate,
+                        channels,
+                    });
                 }
                 Err(e) => {
                     let _ = tx.send(AudioTestEvent::Error(e.to_string()));
@@ -1902,30 +2113,34 @@ impl BenchmarkPanel {
     fn start_live_monitor(&mut self) {
         use llamaburn_services::{AudioInputService, AudioOutputService};
 
-        let Some(device_id) = self.selected_device_id.clone() else { return };
+        let Some(device_id) = self.selected_device_id.clone() else {
+            return;
+        };
 
         info!("Starting live audio monitor: device={}", device_id);
 
         // Start raw audio input stream (no resampling, native format)
         let (audio_tx, audio_rx) = std::sync::mpsc::channel();
-        let (stream_handle, sample_rate, channels) = match AudioInputService::start_stream_raw(&device_id, audio_tx) {
-            Ok(result) => result,
-            Err(e) => {
-                self.error = Some(format!("Failed to start audio stream: {}", e));
-                return;
-            }
-        };
+        let (stream_handle, sample_rate, channels) =
+            match AudioInputService::start_stream_raw(&device_id, audio_tx) {
+                Ok(result) => result,
+                Err(e) => {
+                    self.error = Some(format!("Failed to start audio stream: {}", e));
+                    return;
+                }
+            };
 
         // Start output monitor with matching format and latency setting
         let latency = self.playback_latency_ms;
-        let monitor_handle = match AudioOutputService::start_monitor(audio_rx, sample_rate, channels, latency) {
-            Ok(h) => h,
-            Err(e) => {
-                stream_handle.stop();
-                self.error = Some(format!("Failed to start monitor output: {}", e));
-                return;
-            }
-        };
+        let monitor_handle =
+            match AudioOutputService::start_monitor(audio_rx, sample_rate, channels, latency) {
+                Ok(h) => h,
+                Err(e) => {
+                    stream_handle.stop();
+                    self.error = Some(format!("Failed to start monitor output: {}", e));
+                    return;
+                }
+            };
 
         // Store handles
         self.live_stream_handle = Some(stream_handle);
@@ -1955,7 +2170,9 @@ impl BenchmarkPanel {
         use llamaburn_services::AudioOutputService;
 
         // Check recording completion
-        let Some(rx) = &self.audio_test_rx else { return };
+        let Some(rx) = &self.audio_test_rx else {
+            return;
+        };
 
         let event = match rx.try_recv() {
             Ok(e) => e,
@@ -1977,25 +2194,30 @@ impl BenchmarkPanel {
         };
 
         match event {
-            AudioTestEvent::RecordingComplete { samples, sample_rate, channels } => {
+            AudioTestEvent::RecordingComplete {
+                samples,
+                sample_rate,
+                channels,
+            } => {
                 info!(
                     samples = samples.len(),
-                    sample_rate,
-                    channels,
-                    "Recording complete, starting playback"
+                    sample_rate, channels, "Recording complete, starting playback"
                 );
 
                 // Convert to mono for playback if needed (playback handles stereo expansion)
                 let mono_samples = match channels {
                     1 => samples,
-                    _ => samples.chunks(channels as usize)
+                    _ => samples
+                        .chunks(channels as usize)
                         .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
                         .collect(),
                 };
 
                 match AudioOutputService::play_samples(mono_samples, sample_rate) {
                     Ok(handle) => {
-                        self.audio_test_state = AudioTestState::Playing { handle: Some(handle) };
+                        self.audio_test_state = AudioTestState::Playing {
+                            handle: Some(handle),
+                        };
                     }
                     Err(e) => {
                         self.error = Some(format!("Playback failed: {}", e));
@@ -2014,7 +2236,9 @@ impl BenchmarkPanel {
 
     #[cfg(feature = "audio-input")]
     fn check_playback_completion(&mut self) {
-        let AudioTestState::Playing { handle } = &mut self.audio_test_state else { return };
+        let AudioTestState::Playing { handle } = &mut self.audio_test_state else {
+            return;
+        };
 
         let Some(h) = handle else {
             self.audio_test_state = AudioTestState::Idle;
@@ -2037,7 +2261,9 @@ impl BenchmarkPanel {
         // Stop existing monitor if any
         self.stop_level_monitor();
 
-        let Some(device_id) = self.selected_device_id.clone() else { return };
+        let Some(device_id) = self.selected_device_id.clone() else {
+            return;
+        };
 
         info!("Starting input level monitor: device={}", device_id);
 
@@ -2118,7 +2344,11 @@ impl BenchmarkPanel {
 
         // Convert to dB (-60 to 0 range)
         let to_db = |level: f32| -> f32 {
-            if level < 0.001 { -60.0 } else { 20.0 * level.log10() }
+            if level < 0.001 {
+                -60.0
+            } else {
+                20.0 * level.log10()
+            }
         };
 
         let left_db = to_db(left);
@@ -2138,10 +2368,8 @@ impl BenchmarkPanel {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(label).small().monospace());
 
-                let (response, painter) = ui.allocate_painter(
-                    egui::vec2(bar_width, bar_height),
-                    egui::Sense::hover(),
-                );
+                let (response, painter) =
+                    ui.allocate_painter(egui::vec2(bar_width, bar_height), egui::Sense::hover());
                 let rect = response.rect;
 
                 // Background
@@ -2149,20 +2377,19 @@ impl BenchmarkPanel {
 
                 // Level bar with gradient colors
                 let level_width = rect.width() * level;
-                let level_rect = egui::Rect::from_min_size(
-                    rect.min,
-                    egui::vec2(level_width, rect.height()),
-                );
+                let level_rect =
+                    egui::Rect::from_min_size(rect.min, egui::vec2(level_width, rect.height()));
 
                 // Color thresholds: (max_level, color)
                 // Green < -12dB, Yellow -12 to -6dB, Orange -6 to -3dB, Red > -3dB
                 let color_zones: [(f32, egui::Color32); 4] = [
-                    (0.50, egui::Color32::from_rgb(50, 205, 50)),   // Green: below -12dB
-                    (0.80, egui::Color32::from_rgb(255, 200, 0)),   // Yellow: -12dB to -6dB
-                    (0.95, egui::Color32::from_rgb(255, 140, 0)),   // Orange: -6dB to -3dB
-                    (1.00, egui::Color32::from_rgb(255, 50, 50)),   // Red: above -3dB
+                    (0.50, egui::Color32::from_rgb(50, 205, 50)), // Green: below -12dB
+                    (0.80, egui::Color32::from_rgb(255, 200, 0)), // Yellow: -12dB to -6dB
+                    (0.95, egui::Color32::from_rgb(255, 140, 0)), // Orange: -6dB to -3dB
+                    (1.00, egui::Color32::from_rgb(255, 50, 50)), // Red: above -3dB
                 ];
-                let color = color_zones.iter()
+                let color = color_zones
+                    .iter()
                     .find(|(threshold, _)| level < *threshold)
                     .map(|(_, c)| *c)
                     .unwrap_or(color_zones[3].1);
@@ -2170,12 +2397,7 @@ impl BenchmarkPanel {
                 painter.rect_filled(level_rect, 2.0, color);
 
                 // dB markers
-                let marker_positions = [
-                    (0.0, "-∞"),
-                    (0.5, "-12"),
-                    (0.8, "-6"),
-                    (1.0, "0"),
-                ];
+                let marker_positions = [(0.0, "-∞"), (0.5, "-12"), (0.8, "-6"), (1.0, "0")];
                 for (pos, _label) in marker_positions {
                     let x = rect.left() + rect.width() * pos;
                     painter.line_segment(
@@ -2251,19 +2473,19 @@ impl BenchmarkPanel {
             .spacing([10.0, 6.0])
             .show(ui, |ui| {
                 ui.label("Device:");
-                let playback_label = self.playback_device_id
-                    .as_deref()
-                    .unwrap_or("default");
+                let playback_label = self.playback_device_id.as_deref().unwrap_or("default");
                 egui::ComboBox::from_id_salt("playback_device")
                     .selected_text(playback_label)
                     .width(280.0)
                     .show_ui(ui, |ui| {
-                        if ui.selectable_label(self.playback_device_id.is_none(), "default").clicked() {
+                        if ui
+                            .selectable_label(self.playback_device_id.is_none(), "default")
+                            .clicked()
+                        {
                             self.playback_device_id = None;
                         }
                     });
                 ui.end_row();
-
             });
 
         ui.add_space(12.0);
@@ -2337,7 +2559,8 @@ impl BenchmarkPanel {
 
                 // Channels selector
                 ui.label("Channels:");
-                let ch_label = CHANNEL_OPTIONS.iter()
+                let ch_label = CHANNEL_OPTIONS
+                    .iter()
                     .find(|(ch, _)| *ch == self.audio_channels)
                     .map(|(_, l)| *l)
                     .unwrap_or("2 (Stereo)");
@@ -2346,7 +2569,10 @@ impl BenchmarkPanel {
                     .width(280.0)
                     .show_ui(ui, |ui| {
                         for &(ch, label) in CHANNEL_OPTIONS {
-                            if ui.selectable_label(self.audio_channels == ch, label).clicked() {
+                            if ui
+                                .selectable_label(self.audio_channels == ch, label)
+                                .clicked()
+                            {
                                 self.audio_channels = ch;
                             }
                         }
@@ -2370,7 +2596,10 @@ impl BenchmarkPanel {
                     .show_ui(ui, |ui| {
                         for &rate in SAMPLE_RATES {
                             let label = format!("{} Hz", rate);
-                            if ui.selectable_label(self.audio_sample_rate == rate, label).clicked() {
+                            if ui
+                                .selectable_label(self.audio_sample_rate == rate, label)
+                                .clicked()
+                            {
                                 self.audio_sample_rate = rate;
                             }
                         }
@@ -2384,7 +2613,10 @@ impl BenchmarkPanel {
                     .width(280.0)
                     .show_ui(ui, |ui| {
                         for &fmt in AudioSampleFormat::all() {
-                            if ui.selectable_label(self.audio_sample_format == fmt, fmt.label()).clicked() {
+                            if ui
+                                .selectable_label(self.audio_sample_format == fmt, fmt.label())
+                                .clicked()
+                            {
                                 self.audio_sample_format = fmt;
                             }
                         }
@@ -2431,7 +2663,9 @@ impl BenchmarkPanel {
     }
 
     fn save_audio_to_history(&mut self, result: &AudioBenchmarkResult) {
-        let Some(model) = self.whisper_model else { return };
+        let Some(model) = self.whisper_model else {
+            return;
+        };
 
         let model_id = format!("whisper-{}", model.label().to_lowercase());
 
@@ -2463,7 +2697,9 @@ impl BenchmarkPanel {
             return;
         }
 
-        let Some(model) = self.whisper_model else { return };
+        let Some(model) = self.whisper_model else {
+            return;
+        };
 
         if self.last_whisper_model_for_rankings == Some(model) {
             return;
@@ -2534,7 +2770,9 @@ impl BenchmarkPanel {
             return;
         }
 
-        let Some(model) = self.whisper_model else { return };
+        let Some(model) = self.whisper_model else {
+            return;
+        };
 
         if self.last_whisper_model_for_info == Some(model) {
             return;
@@ -2546,7 +2784,9 @@ impl BenchmarkPanel {
     }
 
     fn poll_audio_model_info(&mut self) {
-        let Some(rx) = &self.audio_model_info_rx else { return };
+        let Some(rx) = &self.audio_model_info_rx else {
+            return;
+        };
 
         let Ok(info) = rx.try_recv() else { return };
 
