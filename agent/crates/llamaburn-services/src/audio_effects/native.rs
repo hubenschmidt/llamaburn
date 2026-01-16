@@ -263,7 +263,7 @@ impl AudioEffect for CompressorEffect {
     }
 }
 
-/// Simple delay effect with feedback
+/// Simple delay effect with feedback - dynamic delay time
 pub struct DelayEffect {
     delay_ms: f32,
     feedback: f32,
@@ -271,28 +271,26 @@ pub struct DelayEffect {
     buffer: Vec<f32>,
     write_pos: usize,
     sample_rate: f32,
+    max_delay_ms: f32,
     bypassed: bool,
 }
 
 impl DelayEffect {
     pub fn new(delay_ms: f32, feedback: f32, mix: f32, sample_rate: f32) -> Self {
-        let delay_samples = (delay_ms * sample_rate / 1000.0) as usize;
+        let max_delay_ms = 2000.0; // 2 second max buffer
+        let max_samples = (max_delay_ms * sample_rate / 1000.0) as usize;
         Self {
-            delay_ms,
-            feedback: feedback.clamp(0.0, 0.95),
+            delay_ms: delay_ms.clamp(1.0, max_delay_ms),
+            feedback: feedback.clamp(0.0, 1.0),
             mix: mix.clamp(0.0, 1.0),
-            buffer: vec![0.0; Ord::max(delay_samples, 1)],
+            buffer: vec![0.0; max_samples],
             write_pos: 0,
             sample_rate,
+            max_delay_ms,
             bypassed: false,
         }
     }
 
-    fn rebuild_buffer(&mut self) {
-        let delay_samples = (self.delay_ms * self.sample_rate / 1000.0) as usize;
-        self.buffer = vec![0.0; Ord::max(delay_samples, 1)];
-        self.write_pos = 0;
-    }
 }
 
 impl fmt::Debug for DelayEffect {
@@ -312,22 +310,27 @@ impl AudioEffect for DelayEffect {
     }
 
     fn process(&mut self, samples: &mut [f32]) {
+        let delay_samples = (self.delay_ms * self.sample_rate / 1000.0) as usize;
+        let delay_samples = delay_samples.clamp(1, self.buffer.len() - 1);
+
         for sample in samples.iter_mut() {
-            let delayed = self.buffer[self.write_pos];
-            let input = *sample + delayed * self.feedback;
-            self.buffer[self.write_pos] = input;
+            // Read from delayed position
+            let read_pos = (self.write_pos + self.buffer.len() - delay_samples) % self.buffer.len();
+            let delayed = self.buffer[read_pos];
+
+            // Write input + feedback to current position
+            self.buffer[self.write_pos] = *sample + delayed * self.feedback;
             self.write_pos = (self.write_pos + 1) % self.buffer.len();
+
+            // Mix dry and wet
             *sample = *sample * (1.0 - self.mix) + delayed * self.mix;
         }
     }
 
     fn set_param(&mut self, name: &str, value: f32) {
         match name {
-            "delay" => {
-                self.delay_ms = value;
-                self.rebuild_buffer();
-            }
-            "feedback" => self.feedback = value.clamp(0.0, 0.95),
+            "delay" => self.delay_ms = value.clamp(1.0, self.max_delay_ms),
+            "feedback" => self.feedback = value.clamp(0.0, 1.0),
             "mix" => self.mix = value.clamp(0.0, 1.0),
             _ => {}
         }
@@ -335,8 +338,8 @@ impl AudioEffect for DelayEffect {
 
     fn get_params(&self) -> Vec<EffectParam> {
         vec![
-            EffectParam::new("delay", self.delay_ms, 10.0, 1000.0, "ms"),
-            EffectParam::new("feedback", self.feedback, 0.0, 0.95, ""),
+            EffectParam::new("delay", self.delay_ms, 1.0, self.max_delay_ms, "ms"),
+            EffectParam::new("feedback", self.feedback, 0.0, 1.0, ""),
             EffectParam::new("mix", self.mix, 0.0, 1.0, ""),
         ]
     }
