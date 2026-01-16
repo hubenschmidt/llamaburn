@@ -4,8 +4,7 @@
 
 Add audio effects processing to llamaburn with:
 1. **Native Effects** - Built-in DSP effects (EQ, compression, reverb, etc.)
-2. **VST Plugin Support** - Load external VST2/VST3 plugins
-3. **32-bit Plugin Compatibility** - Support legacy 32-bit plugins via bridge
+2. **VST Plugin Support** - Load Linux-native VST2 plugins (.so files)
 
 ---
 
@@ -85,26 +84,16 @@ instance.init();
 vst = "0.3"
 ```
 
-### 32-bit Plugin Bridge: yabridge
+### Windows VST Bridge (Optional): yabridge
 
-**Why yabridge:**
-- Runs 32-bit Windows VSTs on 64-bit Linux
+If you have Windows VSTs, yabridge can bridge them to Linux:
 - Uses Wine under the hood
-- Near-native performance
 - Supports VST2 and VST3
 
-**Setup:**
 ```bash
-# Install yabridge
 yay -S yabridge  # Arch
-# or download from https://github.com/robbert-vdh/yabridge
-
-# Bridge 32-bit plugins
-yabridgectl add ~/.wine/drive_c/Program\ Files\ \(x86\)/VstPlugins
-yabridgectl sync
+yabridgectl add /path/to/windows/plugins && yabridgectl sync
 ```
-
-After bridging, 32-bit plugins appear as Linux-native `.so` files.
 
 ---
 
@@ -210,38 +199,27 @@ impl AudioEffect for VstEffect {
 
 ---
 
-## 32-bit Plugin Compatibility
+## Supported Plugin Formats
 
-### Summary
+| Format | Support |
+|--------|---------|
+| Linux VST2 (.so) | Native via vst-rs ✓ |
+| Linux VST3 (.vst3) | Via vst3-sys (future) |
+| Windows VST | Via yabridge (optional) |
 
-| Plugin Type | Linux x64 Support |
-|-------------|-------------------|
-| 64-bit Linux VST | Native ✓ |
-| 64-bit Windows VST | Via yabridge + Wine ✓ |
-| 32-bit Linux VST | Not supported (rare) |
-| 32-bit Windows VST | Via yabridge + Wine ✓ |
+### Recommended Linux VST Sources
 
-**Your 15-year-old 32-bit plugins will work** if you:
-1. Install yabridge and Wine
-2. Bridge the plugin directory
-3. Load the resulting `.so` file in llamaburn
-
-### Alternative: Carla
-
-If vst-rs proves difficult, Carla (KXStudio) is a mature plugin host that:
-- Supports VST2, VST3, LV2, LADSPA
-- Has 32-bit bridging built-in
-- Can be embedded or used as JACK client
+- **Free:** Vital, Surge XT, Dexed, OB-Xd, TAL plugins, LSP plugins
+- **Commercial:** u-he, FabFilter, Bitwig (all have Linux builds)
 
 ---
 
 ## Verification
 
 1. Add a native Gain effect → hear volume change in live monitor
-2. Load a 64-bit VST → effect applies to audio
-3. Bridge a 32-bit Windows VST with yabridge → loads and processes
-4. Reorder effects in chain → hear difference in sound
-5. Bypass all → clean passthrough
+2. Load a Linux VST2 plugin (.so) → effect applies to audio
+3. Reorder effects in chain → hear difference in sound
+4. Bypass all → clean passthrough
 
 ---
 
@@ -251,9 +229,6 @@ If vst-rs proves difficult, Carla (KXStudio) is a mature plugin host that:
 [dependencies]
 fundsp = "0.18"       # Native DSP
 vst = "0.3"           # VST2 hosting
-
-[target.'cfg(unix)'.dependencies]
-# yabridge is external tool, not a crate
 ```
 
 ---

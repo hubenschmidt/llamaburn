@@ -244,6 +244,12 @@ pub struct BenchmarkPanel {
     playback_device_id: Option<String>,
     #[cfg(feature = "audio-input")]
     playback_latency_ms: u32,
+
+    // Audio effects chain
+    #[cfg(feature = "audio-input")]
+    effect_chain: std::sync::Arc<std::sync::Mutex<llamaburn_services::effects::EffectChain>>,
+    #[cfg(feature = "audio-input")]
+    show_effects_ui: bool,
 }
 
 /// Events from async audio benchmark
@@ -355,6 +361,13 @@ impl BenchmarkPanel {
             playback_device_id: None,
             #[cfg(feature = "audio-input")]
             playback_latency_ms: 100,
+
+            #[cfg(feature = "audio-input")]
+            effect_chain: std::sync::Arc::new(std::sync::Mutex::new(
+                llamaburn_services::effects::EffectChain::new(),
+            )),
+            #[cfg(feature = "audio-input")]
+            show_effects_ui: false,
         }
     }
 
@@ -1440,8 +1453,9 @@ impl BenchmarkPanel {
         };
         self.live_stream_handle = Some(stream_handle);
 
-        // Spawn processing thread
+        // Spawn processing thread with effect chain
         let event_tx_clone = event_tx.clone();
+        let effect_chain = self.effect_chain.clone();
         std::thread::spawn(move || {
             let mut service = WhisperService::default();
 
@@ -1463,11 +1477,16 @@ impl BenchmarkPanel {
 
             loop {
                 // Receive audio chunk (with timeout to check for stop)
-                let samples = match audio_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                let mut samples = match audio_rx.recv_timeout(std::time::Duration::from_millis(100)) {
                     Ok(s) => s,
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 };
+
+                // Apply effects chain to audio before processing
+                if let Ok(mut chain) = effect_chain.lock() {
+                    chain.process(&mut samples);
+                }
 
                 // Compute peaks for waveform display (downsample to ~100 peaks per chunk)
                 let peaks = Self::compute_waveform_peaks(&samples, 100);
@@ -2020,6 +2039,11 @@ impl BenchmarkPanel {
 
         ui.separator();
 
+        // Effects Chain submenu
+        self.render_effects_menu(ui);
+
+        ui.separator();
+
         // Rescan Audio Devices
         if ui.button("Rescan Audio Devices").clicked() {
             self.refresh_audio_devices();
@@ -2130,17 +2154,23 @@ impl BenchmarkPanel {
                 }
             };
 
-        // Start output monitor with matching format and latency setting
+        // Start output monitor with matching format, latency, and effects chain
         let latency = self.playback_latency_ms;
-        let monitor_handle =
-            match AudioOutputService::start_monitor(audio_rx, sample_rate, channels, latency) {
-                Ok(h) => h,
-                Err(e) => {
-                    stream_handle.stop();
-                    self.error = Some(format!("Failed to start monitor output: {}", e));
-                    return;
-                }
-            };
+        let effect_chain = Some(self.effect_chain.clone());
+        let monitor_handle = match AudioOutputService::start_monitor_with_effects(
+            audio_rx,
+            sample_rate,
+            channels,
+            latency,
+            effect_chain,
+        ) {
+            Ok(h) => h,
+            Err(e) => {
+                stream_handle.stop();
+                self.error = Some(format!("Failed to start monitor output: {}", e));
+                return;
+            }
+        };
 
         // Store handles
         self.live_stream_handle = Some(stream_handle);
@@ -2623,6 +2653,97 @@ impl BenchmarkPanel {
                     });
                 ui.end_row();
             });
+    }
+
+    #[cfg(feature = "audio-input")]
+    fn render_effects_menu(&mut self, ui: &mut egui::Ui) {
+        let effect_count = self.effect_chain.lock().map(|c| c.len()).unwrap_or(0);
+
+        let label = match effect_count {
+            0 => "🎛️ Effects Chain".to_string(),
+            n => format!("🎛️ Effects Chain ({})", n),
+        };
+
+        ui.menu_button(label, |ui| {
+            self.render_add_effect_menu(ui);
+            ui.separator();
+            self.render_effect_list(ui);
+        });
+    }
+
+    #[cfg(feature = "audio-input")]
+    fn render_add_effect_menu(&self, ui: &mut egui::Ui) {
+        use llamaburn_services::effects::{
+            CompressorEffect, DelayEffect, GainEffect, HighPassEffect, LowPassEffect, ReverbEffect,
+        };
+
+        ui.menu_button("➕ Add Effect", |ui| {
+            let effects: Vec<(&str, Box<dyn FnOnce() -> Box<dyn llamaburn_services::effects::AudioEffect>>)> = vec![
+                ("Gain", Box::new(|| Box::new(GainEffect::new(0.0)))),
+                ("High Pass Filter", Box::new(|| Box::new(HighPassEffect::new(80.0, 44100.0)))),
+                ("Low Pass Filter", Box::new(|| Box::new(LowPassEffect::new(12000.0, 44100.0)))),
+                ("Compressor", Box::new(|| Box::new(CompressorEffect::new(-20.0, 10.0, 100.0)))),
+                ("Delay", Box::new(|| Box::new(DelayEffect::new(250.0, 0.4, 0.3, 44100.0)))),
+                ("Reverb", Box::new(|| Box::new(ReverbEffect::new(0.5, 0.5, 0.3, 44100.0)))),
+            ];
+
+            for (name, create_effect) in effects {
+                if !ui.button(name).clicked() {
+                    continue;
+                }
+                let Ok(mut c) = self.effect_chain.lock() else {
+                    continue;
+                };
+                c.add(create_effect());
+                ui.close_menu();
+            }
+        });
+    }
+
+    #[cfg(feature = "audio-input")]
+    fn render_effect_list(&self, ui: &mut egui::Ui) {
+        let Ok(mut chain) = self.effect_chain.lock() else {
+            return;
+        };
+
+        let mut to_remove: Option<usize> = None;
+
+        for (i, effect) in chain.effects().iter().enumerate() {
+            ui.horizontal(|ui| {
+                let suffix = ["", " [OFF]"][effect.is_bypassed() as usize];
+                ui.label(format!("{}. {}{}", i + 1, effect.name(), suffix));
+                if ui.small_button("❌").clicked() {
+                    to_remove = Some(i);
+                }
+            });
+        }
+
+        if let Some(idx) = to_remove {
+            chain.remove(idx);
+        }
+
+        if chain.is_empty() {
+            ui.label("No effects added");
+        }
+
+        ui.separator();
+
+        // Bypass all toggle
+        let bypass_all = chain.is_bypass_all();
+        let bypass_label = ["🔇 Bypass All", "🔇 Bypass All ✓"][bypass_all as usize];
+        if ui.button(bypass_label).clicked() {
+            chain.set_bypass_all(!bypass_all);
+        }
+
+        // Clear all
+        if chain.is_empty() {
+            return;
+        }
+        if !ui.button("🗑️ Clear All").clicked() {
+            return;
+        }
+        chain.clear();
+        ui.close_menu();
     }
 
     fn refresh_rankings(&mut self) {

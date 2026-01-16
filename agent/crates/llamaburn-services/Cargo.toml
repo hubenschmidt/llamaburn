@@ -50,8 +50,11 @@ rubato = "0.15"
 cpal = { version = "0.15", optional = true }
 ringbuf = { version = "0.4", optional = true }
 
+# Audio effects / DSP
+fundsp = { version = "0.18", optional = true }
+
 [features]
 default = []
 whisper = ["whisper-rs"]
 whisper-gpu = ["whisper", "whisper-rs/hipblas"]
-audio-input = ["cpal", "ringbuf"]
+audio-input = ["cpal", "ringbuf", "fundsp"]

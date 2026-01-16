@@ -4,7 +4,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -12,6 +12,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::StreamConfig;
 use thiserror::Error;
 use tracing::{error, info};
+
+use crate::effects::EffectChain;
 
 #[derive(Debug, Error)]
 pub enum AudioOutputError {
@@ -179,11 +181,23 @@ impl AudioOutputService {
     /// Start live monitoring - plays audio from receiver through speakers
     /// input_sample_rate and input_channels describe the incoming audio format
     /// latency_ms controls the buffer size (lower = less delay, higher = more stable)
+    /// effect_chain is an optional Arc<Mutex<EffectChain>> for real-time effects
     pub fn start_monitor(
         audio_rx: Receiver<Vec<f32>>,
         input_sample_rate: u32,
         input_channels: u16,
         latency_ms: u32,
+    ) -> Result<MonitorHandle, AudioOutputError> {
+        Self::start_monitor_with_effects(audio_rx, input_sample_rate, input_channels, latency_ms, None)
+    }
+
+    /// Start live monitoring with optional effects processing
+    pub fn start_monitor_with_effects(
+        audio_rx: Receiver<Vec<f32>>,
+        input_sample_rate: u32,
+        input_channels: u16,
+        latency_ms: u32,
+        effect_chain: Option<Arc<Mutex<EffectChain>>>,
     ) -> Result<MonitorHandle, AudioOutputError> {
         let host = cpal::default_host();
         let device = host
@@ -224,13 +238,33 @@ impl AudioOutputService {
                 };
 
                 // Only resample if rates differ
-                let resampled = match input_sample_rate == output_sample_rate {
+                let mut resampled = match input_sample_rate == output_sample_rate {
                     true => samples,
                     false => match Self::resample_if_needed(&samples, input_sample_rate, output_sample_rate) {
                         Ok(r) => r,
                         Err(_) => continue,
                     },
                 };
+
+                // Apply effects chain if present (on mono signal for consistency)
+                if let Some(ref chain) = effect_chain {
+                    // Convert to mono for effect processing
+                    let mut mono: Vec<f32> = match input_channels {
+                        1 => resampled,
+                        _ => resampled.chunks(input_channels).map(|c| c.iter().sum::<f32>() / input_channels as f32).collect(),
+                    };
+
+                    // Process through effect chain
+                    if let Ok(mut chain) = chain.lock() {
+                        chain.process(&mut mono);
+                    }
+
+                    // Expand back to input channels for channel conversion below
+                    resampled = match input_channels {
+                        1 => mono,
+                        _ => mono.iter().flat_map(|&s| std::iter::repeat(s).take(input_channels)).collect(),
+                    };
+                }
 
                 // Handle channel conversion
                 let output: Vec<f32> = match (input_channels, output_channels) {
