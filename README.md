@@ -8,6 +8,8 @@ A benchmarking, profiling, and stress-testing suite for local LLM models.
 - **Local model support** — Auto-discovers Ollama models
 - **Native GUI** — egui/eframe desktop application
 
+![Capture Analyze](screenshot-capture-analyze.png)
+
 ![Effects Rack](screenshot-effects.png)
 
 ![LlamaBurn GUI](screenshot.png)

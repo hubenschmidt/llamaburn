@@ -234,6 +234,8 @@ pub struct BenchmarkPanel {
     #[cfg(feature = "audio-input")]
     level_monitor_rx: Option<Receiver<(f32, f32)>>, // (left_peak, right_peak) 0.0-1.0
     #[cfg(feature = "audio-input")]
+    waveform_monitor_rx: Option<Receiver<Vec<(f32, f32)>>>, // Dense waveform peaks
+    #[cfg(feature = "audio-input")]
     input_levels: (f32, f32), // Current display levels with decay
 
     // Audio settings dialog
@@ -371,6 +373,8 @@ impl BenchmarkPanel {
             level_monitor_handle: None,
             #[cfg(feature = "audio-input")]
             level_monitor_rx: None,
+            #[cfg(feature = "audio-input")]
+            waveform_monitor_rx: None,
             #[cfg(feature = "audio-input")]
             input_levels: (0.0, 0.0),
 
@@ -3373,6 +3377,7 @@ impl BenchmarkPanel {
 
         let (audio_tx, audio_rx) = std::sync::mpsc::channel::<Vec<f32>>();
         let (level_tx, level_rx) = std::sync::mpsc::channel::<(f32, f32)>();
+        let (waveform_tx, waveform_rx) = std::sync::mpsc::channel::<Vec<(f32, f32)>>();
 
         // Start audio stream
         let stream_handle = match AudioInputService::start_stream(&device_id, audio_tx) {
@@ -3385,9 +3390,12 @@ impl BenchmarkPanel {
 
         self.level_monitor_handle = Some(stream_handle);
         self.level_monitor_rx = Some(level_rx);
+        self.waveform_monitor_rx = Some(waveform_rx);
 
-        // Spawn thread to calculate levels
+        // Spawn thread to calculate levels and waveform peaks
         std::thread::spawn(move || {
+            let mut sample_buffer: Vec<f32> = Vec::with_capacity(3200);
+
             loop {
                 let samples = match audio_rx.recv_timeout(std::time::Duration::from_millis(100)) {
                     Ok(s) => s,
@@ -3395,11 +3403,26 @@ impl BenchmarkPanel {
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 };
 
-                // Calculate peak levels (assuming stereo interleaved, but our stream is mono 16kHz)
-                // Since AudioInputService converts to mono, we'll just use the same value for L/R
+                // Calculate peak levels for VU meter
                 let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-
                 if level_tx.send((peak, peak)).is_err() {
+                    break;
+                }
+
+                // Buffer samples for dense waveform peaks
+                sample_buffer.extend(&samples);
+
+                // When we have ~100ms of audio (1600 samples at 16kHz), compute peaks
+                const SAMPLES_PER_BATCH: usize = 1600;
+                if sample_buffer.len() < SAMPLES_PER_BATCH {
+                    continue;
+                }
+
+                // Compute 40 peaks per batch = 400 peaks/second for dense waveform
+                let peaks = Self::compute_waveform_peaks(&sample_buffer, 40);
+                sample_buffer.clear();
+
+                if waveform_tx.send(peaks).is_err() {
                     break;
                 }
             }
@@ -3412,6 +3435,7 @@ impl BenchmarkPanel {
             handle.stop();
         }
         self.level_monitor_rx = None;
+        self.waveform_monitor_rx = None;
         self.input_levels = (0.0, 0.0);
     }
 
@@ -3441,17 +3465,24 @@ impl BenchmarkPanel {
         self.input_levels.0 = self.input_levels.0.max(l);
         self.input_levels.1 = self.input_levels.1.max(r);
 
-        // Also populate waveform_peaks when recording (for effect detection or any live mode)
-        if self.live_recording {
-            // Convert stereo levels to waveform format (min, max around center)
-            let peak = l.max(r);
-            self.waveform_peaks.push_back((-peak, peak));
+        // Receive dense waveform peaks when recording
+        if !self.live_recording {
+            return;
+        }
 
-            // Cap waveform size (roughly 10 seconds at 60fps)
-            const MAX_PEAKS: usize = 3000;
-            while self.waveform_peaks.len() > MAX_PEAKS {
-                self.waveform_peaks.pop_front();
-            }
+        let Some(waveform_rx) = &self.waveform_monitor_rx else {
+            return;
+        };
+
+        // Receive all available waveform peaks
+        while let Ok(peaks) = waveform_rx.try_recv() {
+            self.waveform_peaks.extend(peaks);
+        }
+
+        // Cap waveform size (~30 seconds at 400 peaks/sec)
+        const MAX_PEAKS: usize = 12000;
+        while self.waveform_peaks.len() > MAX_PEAKS {
+            self.waveform_peaks.pop_front();
         }
     }
 
