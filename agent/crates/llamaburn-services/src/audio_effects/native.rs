@@ -113,6 +113,10 @@ impl AudioEffect for HighPassEffect {
     fn is_bypassed(&self) -> bool {
         self.bypassed
     }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.filter.set_sample_rate(sample_rate as f64);
+    }
 }
 
 /// Low-pass filter - removes high frequencies
@@ -173,6 +177,10 @@ impl AudioEffect for LowPassEffect {
 
     fn is_bypassed(&self) -> bool {
         self.bypassed
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.filter.set_sample_rate(sample_rate as f64);
     }
 }
 
@@ -351,6 +359,17 @@ impl AudioEffect for DelayEffect {
     fn is_bypassed(&self) -> bool {
         self.bypassed
     }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        let old_rate = self.sample_rate;
+        if (sample_rate - old_rate).abs() < 1.0 {
+            return;
+        }
+        self.sample_rate = sample_rate;
+        let max_samples = (self.max_delay_ms * sample_rate / 1000.0) as usize;
+        self.buffer = vec![0.0; max_samples];
+        self.write_pos = 0;
+    }
 }
 
 /// Simple reverb using multiple delay lines (Schroeder reverb)
@@ -462,5 +481,14 @@ impl AudioEffect for ReverbEffect {
 
     fn is_bypassed(&self) -> bool {
         self.bypassed
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        let old_rate = self.sample_rate;
+        if (sample_rate - old_rate).abs() < 1.0 {
+            return;
+        }
+        self.sample_rate = sample_rate;
+        self.rebuild_delays();
     }
 }

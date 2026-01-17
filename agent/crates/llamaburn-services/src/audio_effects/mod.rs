@@ -14,6 +14,8 @@ pub trait AudioEffect: Send + Debug {
     fn get_params(&self) -> Vec<EffectParam>;
     fn set_bypass(&mut self, bypass: bool);
     fn is_bypassed(&self) -> bool;
+    /// Update sample rate for effects that depend on it (delay, reverb, filters)
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +113,13 @@ impl EffectChain {
 
     pub fn clear(&mut self) {
         self.effects.clear();
+    }
+
+    /// Set sample rate for all effects in the chain
+    pub fn set_sample_rate(&mut self, sample_rate: f32) {
+        for effect in &mut self.effects {
+            effect.set_sample_rate(sample_rate);
+        }
     }
 
     /// Export applied effects as serializable structs (for ground truth reporting)

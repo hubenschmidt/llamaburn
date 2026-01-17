@@ -1687,6 +1687,7 @@ impl BenchmarkPanel {
             // Clone and apply effects for wet
             let mut wet_samples = dry_samples.clone();
             if let Ok(mut chain) = effect_chain.lock() {
+                chain.set_sample_rate(16000.0); // Match capture sample rate
                 chain.process(&mut wet_samples);
             }
 
@@ -2172,6 +2173,11 @@ impl BenchmarkPanel {
             let mut chunk_start_ms: u64 = 0;
             let max_chunk_samples = 16000 * 5; // 5 seconds max at 16kHz
             let min_chunk_samples = 16000 * 1; // 1 second min for VAD trigger
+
+            // Set effect chain sample rate to match audio (16kHz)
+            if let Ok(mut chain) = effect_chain.lock() {
+                chain.set_sample_rate(16000.0);
+            }
 
             // VAD parameters
             let silence_threshold = 0.01_f32; // RMS threshold for silence

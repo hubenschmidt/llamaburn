@@ -232,6 +232,11 @@ impl AudioOutputService {
 
         // Spawn thread to receive audio and feed buffer
         thread::spawn(move || {
+            // Set effect chain sample rate once (use output rate since we resample before effects)
+            if let Some(mut chain) = effect_chain.as_ref().and_then(|c| c.lock().ok()) {
+                chain.set_sample_rate(output_sample_rate as f32);
+            }
+
             while !stop_flag_clone.load(Ordering::SeqCst) {
                 let Ok(samples) = audio_rx.recv_timeout(Duration::from_millis(10)) else {
                     continue;
