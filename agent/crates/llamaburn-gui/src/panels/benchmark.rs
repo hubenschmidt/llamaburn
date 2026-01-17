@@ -795,6 +795,8 @@ impl BenchmarkPanel {
         self.check_playback_completion();
         #[cfg(feature = "audio-input")]
         self.poll_level_monitor();
+        #[cfg(feature = "audio-input")]
+        self.check_capture_duration();
         self.poll_model_info();
         self.poll_audio_model_info();
         self.refresh_rankings();
@@ -2380,7 +2382,7 @@ impl BenchmarkPanel {
 
     #[cfg(feature = "audio-input")]
     fn render_waveform_display(&mut self, ui: &mut egui::Ui) {
-        // Header with recording indicator and duration
+        // Header with recording indicator and countdown
         ui.horizontal(|ui| {
             let (label_text, label_color) = match self.live_recording {
                 true => ("🔴 Recording", Some(egui::Color32::RED)),
@@ -2392,16 +2394,35 @@ impl BenchmarkPanel {
                 None => ui.label(label_text),
             };
 
-            let Some(start) = self.recording_start else {
-                return;
-            };
-            let elapsed = start.elapsed().as_secs_f64();
-            ui.label(format!(
-                "{:02}:{:02}.{}",
-                (elapsed / 60.0) as u32,
-                (elapsed % 60.0) as u32,
-                ((elapsed * 10.0) % 10.0) as u32
-            ));
+            // Show countdown timer during recording
+            if self.live_recording {
+                let Some(start) = self.recording_start else { return; };
+                let elapsed = start.elapsed().as_secs_f64();
+                let total = self.capture_duration_secs as f64;
+                let remaining = (total - elapsed).max(0.0);
+
+                // Countdown display
+                let countdown_color = match remaining < 3.0 {
+                    true => egui::Color32::YELLOW,
+                    false => egui::Color32::WHITE,
+                };
+                ui.colored_label(
+                    countdown_color,
+                    format!("{:.1}s", remaining),
+                );
+
+                ui.separator();
+
+                // Progress bar
+                let progress = (elapsed / total).min(1.0) as f32;
+                let progress_bar = egui::ProgressBar::new(progress)
+                    .desired_width(100.0)
+                    .show_percentage();
+                ui.add(progress_bar);
+
+                // Request repaint for smooth countdown animation
+                ui.ctx().request_repaint();
+            }
         });
 
         // Waveform canvas
@@ -3283,6 +3304,32 @@ impl BenchmarkPanel {
                 self.audio_test_rx = None;
             }
         }
+    }
+
+    #[cfg(feature = "audio-input")]
+    fn check_capture_duration(&mut self) {
+        // Only check if we're in capture mode (not live streaming)
+        let dominated_by_capture = self.effect_detection_running
+            && self.live_recording
+            && self.audio_source_mode == AudioSourceMode::Capture;
+
+        if !dominated_by_capture { return; }
+
+        let Some(start) = self.recording_start else { return; };
+
+        let elapsed = start.elapsed();
+        let duration = std::time::Duration::from_secs(self.capture_duration_secs as u64);
+
+        // Recording duration exceeded - stop the visual recording state
+        if elapsed < duration { return; }
+
+        // Stop level monitor but keep waveform visible
+        if let Some(handle) = self.level_monitor_handle.take() {
+            handle.stop();
+        }
+        self.live_recording = false;
+        self.recording_start = None;
+        self.live_output.push_str("Recording complete. Processing...\n");
     }
 
     #[cfg(feature = "audio-input")]
