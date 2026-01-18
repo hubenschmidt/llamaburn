@@ -1,11 +1,16 @@
-# LlamaBurn is a work in progress
+# LlamaBurn
 
-A benchmarking, profiling, and stress-testing suite for local LLM models.
+A benchmarking, profiling, and stress-testing suite for local LLM models with audio analysis capabilities.
 
-- **Performance benchmarks** — TTFT, TPS, inter-token latency metrics
-- **Stress testing** — Ramp, sweep, sustained, spike modes
-- **Accuracy evaluation** — LLM-as-Judge using Claude or GPT
-- **Local model support** — Auto-discovers Ollama models
+## Features
+
+- **LLM Benchmarking** — TTFT, TPS, inter-token latency metrics
+- **Stress Testing** — Ramp, sweep, sustained, spike modes
+- **Accuracy Evaluation** — LLM-as-Judge using Claude or GPT
+- **Audio Effect Analysis** — Detect and identify audio effects using ML models
+- **Effects Rack** — Real-time audio processing with delay, reverb, EQ, compression
+- **GPU Monitoring** — Real-time VRAM usage and GPU metrics
+- **Local Model Support** — Auto-discovers Ollama models
 - **Native GUI** — egui/eframe desktop application
 
 ![Capture Analyze](screenshot-capture-analyze.png)
@@ -14,18 +19,70 @@ A benchmarking, profiling, and stress-testing suite for local LLM models.
 
 ![LlamaBurn GUI](screenshot.png)
 
-## Audio Benchmarking (WORK IN PROGRESS)
+## Audio Effect Analysis
 
-Six audio benchmark modes planned:
+Analyze audio to detect and identify applied effects using ML-based detection tools.
+
+### Signal Chain
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────┐
+│  Audio Input    │────▶│   Effects Rack   │────▶│  Effect Detection   │
+│  (Mic/File)     │     │  (Delay/Reverb/  │     │  (LLM2Fx-Tools)     │
+│                 │     │   EQ/Compress)   │     │                     │
+└─────────────────┘     └──────────────────┘     └─────────────────────┘
+        │                        │                         │
+        │ Dry Signal             │ Wet Signal              │
+        └────────────────────────┼─────────────────────────┘
+                                 ▼
+                    ┌─────────────────────────┐
+                    │    Combined Report      │
+                    ├─────────────────────────┤
+                    │ • Ground Truth (Rack)   │
+                    │ • Detected Effects      │
+                    │ • LLM Blind Analysis    │
+                    └─────────────────────────┘
+```
+
+### Detection Tools
+
+| Tool | Description |
+|------|-------------|
+| **LLM2Fx-Tools** | ML-based effect detection with dry+wet comparison |
+| **Wav2Vec** | Audio embedding analysis |
+| **Spectral** | Frequency domain analysis |
+
+### Effects Rack
+
+Built-in audio effects for signal chain testing:
+
+| Effect | Parameters |
+|--------|------------|
+| **Delay** | Time (ms), Feedback, Mix |
+| **Reverb** | Room Size, Damping, Mix |
+| **High Pass** | Cutoff frequency (Hz) |
+| **Low Pass** | Cutoff frequency (Hz) |
+| **Compressor** | Threshold, Attack, Release |
+| **Gain** | Level (dB) |
+
+### Audio Modes
+
+| Mode | Description |
+|------|-------------|
+| **File** | Analyze existing audio files |
+| **Capture** | Record audio, apply effects, detect |
+| **Live** | Real-time monitoring with effects |
+
+## Audio Benchmarking
 
 | Mode | Status | Description |
 |------|--------|-------------|
-| STT (Speech-to-Text) | Implemented | Whisper transcription with RTF metrics |
+| STT (Speech-to-Text) | ✅ Implemented | Whisper transcription with RTF metrics |
+| Effect Detection | ✅ Implemented | ML-based audio effect identification |
 | TTS (Text-to-Speech) | Planned | Voice synthesis benchmarking |
 | Music Separation | Planned | Demucs stem isolation |
 | Music Transcription | Planned | Basic Pitch note detection |
 | Music Generation | Planned | AudioCraft/MusicGen |
-| LLM Music Analysis | Planned | Audio understanding via LLM |
 
 ### Building with Whisper (ROCm GPU)
 
@@ -108,28 +165,32 @@ llamaburn status
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────────┐
-│                    llamaburn-gui                          │
-│                  (egui/eframe desktop)                    │
-├───────────────────────────────────────────────────────────┤
-│  Panels: Benchmark │ History │ Stress │ Eval │ Settings  │
-└─────────────┬─────────────────────────────┬───────────────┘
-              │                             │
-┌─────────────┴─────────────┐ ┌─────────────┴───────────────┐
-│   llamaburn-benchmark     │ │     llamaburn-services      │
-│   - Text/Audio runners    │ │   - OllamaClient (HTTP)     │
-│   - Metrics collection    │ │   - WhisperService (STT)    │
-└─────────────┬─────────────┘ │   - HistoryService (SQLite) │
-              │               └─────────────┬───────────────┘
-┌─────────────┴─────────────────────────────┴───────────────┐
-│                     llamaburn-core                        │
-│            Types, config, benchmark definitions           │
-└───────────────────────────────────────────────────────────┘
-              │                             │
-       ┌──────┴──────┐               ┌──────┴──────┐
-       │   Ollama    │               │   Whisper   │
-       │ (localhost) │               │ (whisper-rs)│
-       └─────────────┘               └─────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                         llamaburn-gui                               │
+│                       (egui/eframe desktop)                         │
+├─────────────────────────────────────────────────────────────────────┤
+│  Panels: Benchmark │ Effects Rack │ GPU Monitor │ History │ Settings│
+└────────────┬────────────────────────────────────────┬───────────────┘
+             │                                        │
+┌────────────┴────────────┐          ┌────────────────┴───────────────┐
+│  llamaburn-benchmark    │          │       llamaburn-services       │
+│  - Text/Audio runners   │          │  - OllamaClient (HTTP)         │
+│  - Metrics collection   │          │  - WhisperService (STT)        │
+└────────────┬────────────┘          │  - EffectDetection (LLM2Fx)    │
+             │                       │  - AudioEffects (DSP chain)    │
+             │                       │  - AudioInput/Output (cpal)    │
+             │                       │  - GpuMonitor (nvidia-smi)     │
+             │                       │  - HistoryService (SQLite)     │
+             │                       └────────────────┬───────────────┘
+┌────────────┴────────────────────────────────────────┴───────────────┐
+│                         llamaburn-core                              │
+│              Types, config, benchmark definitions                   │
+└─────────────────────────────────────────────────────────────────────┘
+             │                    │                    │
+      ┌──────┴──────┐      ┌──────┴──────┐      ┌──────┴──────┐
+      │   Ollama    │      │   Whisper   │      │  LLM2Fx     │
+      │ (localhost) │      │ (whisper-rs)│      │  (Python)   │
+      └─────────────┘      └─────────────┘      └─────────────┘
 ```
 
 ## Prerequisites
