@@ -13,17 +13,13 @@ A benchmarking, profiling, and stress-testing suite for local LLM models with au
 - **Local Model Support** — Auto-discovers Ollama models
 - **Native GUI** — egui/eframe desktop application
 
-![Capture Analyze](screenshot-capture-analyze.png)
-
-
-
-![Effects Rack](screenshot-effects.png)
-
 ![llamaburn GUI](screenshot.png)
 
 ## Audio Signal Chain Analysis
 
 Analyze audio to detect and identify applied effects using ML-based detection tools.
+
+![Capture Analyze](screenshot-capture-analyze.png)
 
 ### Control Flow
 
@@ -74,6 +70,8 @@ Built-in audio effects for signal chain testing:
 | **File** | Analyze existing audio files |
 | **Capture** | Record audio, apply effects, detect |
 | **Live** | Real-time monitoring with effects |
+
+![Effects Rack](screenshot-effects.png)
 
 ## Code Generation Benchmarking
 
