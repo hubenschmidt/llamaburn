@@ -9,6 +9,7 @@ use llamaburn_core::{
     Language, ProblemSet,
 };
 
+use super::components::render_model_selector;
 use super::BenchmarkPanel;
 
 /// Code benchmark specific state
@@ -79,36 +80,25 @@ impl BenchmarkPanel {
             .show(ui, |ui| {
                 // Model selection
                 ui.label("Model:");
-                ui.horizontal(|ui| {
-                    ui.add_enabled_ui(!disabled, |ui| {
-                        let selected_text = match (
-                            self.loading_models,
-                            self.models.is_empty(),
-                            self.selected_model.is_empty(),
-                        ) {
-                            (true, _, _) => "Loading models...",
-                            (_, true, _) => "No models found",
-                            (_, _, true) => "Select model...",
-                            _ => &self.selected_model,
-                        };
-
-                        egui::ComboBox::from_id_salt("code_model_select")
-                            .selected_text(selected_text)
-                            .show_ui(ui, |ui| {
-                                for model in &self.models {
-                                    ui.selectable_value(
-                                        &mut self.selected_model,
-                                        model.clone(),
-                                        model,
-                                    );
-                                }
-                            });
-                    });
-
-                    if self.loading_models {
-                        ui.spinner();
-                    }
-                });
+                let resp = render_model_selector(
+                    ui,
+                    "code_model_select",
+                    &self.models,
+                    &self.selected_model,
+                    self.loading_models,
+                    self.model_preloading,
+                    disabled,
+                );
+                if let Some(model) = resp.selected {
+                    self.selected_model = model.clone();
+                    self.model_preload_rx = Some(self.ollama.preload_model_async(&model));
+                    self.model_preloading = true;
+                    self.preloading_model_name = model.clone();
+                    self.live_output.push_str(&format!("⏳ Loading {} into VRAM...\n", model));
+                }
+                if resp.unload_clicked {
+                    self.unload_model();
+                }
                 ui.end_row();
 
                 // Language selection

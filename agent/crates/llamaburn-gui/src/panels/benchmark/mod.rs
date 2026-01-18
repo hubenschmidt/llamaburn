@@ -1,5 +1,6 @@
 mod audio;
 mod code;
+mod components;
 mod text;
 
 use std::path::PathBuf;
