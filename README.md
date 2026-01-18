@@ -21,7 +21,7 @@ A benchmarking, profiling, and stress-testing suite for local LLM models with au
 
 ![LlamaBurn GUI](screenshot.png)
 
-## Audio Effect Analysis
+## Audio Signal Chain Analysis
 
 Analyze audio to detect and identify applied effects using ML-based detection tools.
 
