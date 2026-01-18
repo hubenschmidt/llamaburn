@@ -21,11 +21,13 @@ pub struct CodeBenchmarkState {
     pub selected_problem_ids: Vec<String>,
     pub code_temperature: f32,
     pub code_max_tokens: u32,
+    pub auto_run_tests: bool,
 
     // Runtime state
     pub code_running: bool,
     pub code_rx: Option<Receiver<CodeBenchmarkEvent>>,
     pub current_problem: Option<String>,
+    pub current_problem_id: Option<String>,
     pub generated_code: String,
     pub code_metrics: Vec<CodeBenchmarkMetrics>,
     pub code_summary: Option<CodeBenchmarkSummary>,
@@ -44,9 +46,11 @@ impl CodeBenchmarkState {
             selected_problem_ids: Vec::new(),
             code_temperature: 0.2,
             code_max_tokens: 2048,
+            auto_run_tests: true,
             code_running: false,
             code_rx: None,
             current_problem: None,
+            current_problem_id: None,
             generated_code: String::new(),
             code_metrics: Vec::new(),
             code_summary: None,
@@ -67,6 +71,14 @@ impl CodeBenchmarkState {
             .iter()
             .filter(|p| self.selected_problem_ids.contains(&p.id))
             .collect()
+    }
+
+    pub fn find_problem_by_title(&self, title: &str) -> Option<&CodeProblem> {
+        self.current_problems().iter().find(|p| p.title == title)
+    }
+
+    pub fn find_problem_by_id(&self, id: &str) -> Option<&CodeProblem> {
+        self.current_problems().iter().find(|p| p.id == id)
     }
 }
 
@@ -178,7 +190,7 @@ impl BenchmarkPanel {
 
         ui.add_space(10.0);
 
-        // Run button
+        // Run button and options
         let can_run = !self.code_state.code_running
             && !self.selected_model.is_empty()
             && !self.code_state.selected_problem_ids.is_empty();
@@ -190,8 +202,11 @@ impl BenchmarkPanel {
                 }
                 ui.spinner();
                 ui.label(&self.progress);
-            } else if ui.add_enabled(can_run, egui::Button::new("Run Benchmark")).clicked() {
-                self.start_code_benchmark();
+            } else {
+                if ui.add_enabled(can_run, egui::Button::new("Run Benchmark")).clicked() {
+                    self.start_code_benchmark();
+                }
+                ui.checkbox(&mut self.code_state.auto_run_tests, "Run Tests");
             }
 
             if !disabled {
@@ -276,6 +291,7 @@ impl BenchmarkPanel {
             temperature: self.code_state.code_temperature,
             max_tokens: Some(self.code_state.code_max_tokens),
             warmup_runs: self.warmup,
+            run_tests: self.code_state.auto_run_tests,
         };
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -332,7 +348,11 @@ impl BenchmarkPanel {
                 }
                 CodeBenchmarkEvent::Problem { current, total, title } => {
                     self.progress = format!("Problem {}/{}: {}", current, total, title);
+                    let problem_id = self.code_state
+                        .find_problem_by_title(&title)
+                        .map(|p| p.id.clone());
                     self.code_state.current_problem = Some(title);
+                    self.code_state.current_problem_id = problem_id;
                     self.code_state.generated_code.clear();
                 }
                 CodeBenchmarkEvent::GeneratingCode => {
@@ -343,21 +363,19 @@ impl BenchmarkPanel {
                     self.live_output.push_str(&content);
                 }
                 CodeBenchmarkEvent::ExecutingTests { current, total } => {
-                    self.code_state.code_output.push_str(&format!(
-                        "\nExecuting test {}/{}...\n",
-                        current, total
-                    ));
+                    let msg = format!("\nExecuting test {}/{}...", current, total);
+                    self.live_output.push_str(&msg);
                 }
                 CodeBenchmarkEvent::TestResult { passed, error } => {
-                    let status = if passed { "✅ PASS" } else { "❌ FAIL" };
-                    self.code_state.code_output.push_str(&format!("{}\n", status));
+                    let status = if passed { " ✅ PASS" } else { " ❌ FAIL" };
+                    self.live_output.push_str(status);
                     if let Some(e) = error {
-                        self.code_state.code_output.push_str(&format!("  Error: {}\n", e));
+                        self.live_output.push_str(&format!("\n  Error: {}", e));
                     }
                 }
                 CodeBenchmarkEvent::ProblemComplete { metrics } => {
-                    self.code_state.code_output.push_str(&format!(
-                        "\n--- {} complete: {}/{} tests passed ---\n\n",
+                    self.live_output.push_str(&format!(
+                        "\n\n--- {} complete: {}/{} tests passed ---\n",
                         metrics.problem_id, metrics.tests_passed, metrics.tests_total
                     ));
                     self.code_state.code_metrics.push(metrics);
@@ -365,7 +383,7 @@ impl BenchmarkPanel {
                 CodeBenchmarkEvent::Done { summary } => {
                     self.code_state.code_summary = Some(summary.clone());
                     self.code_state.code_running = false;
-                    self.code_state.code_output.push_str(&format!(
+                    self.live_output.push_str(&format!(
                         "\n=== Benchmark Complete ===\nPass Rate: {:.1}%\nSolved: {}/{}\n",
                         summary.pass_rate * 100.0,
                         summary.problems_solved,
@@ -374,12 +392,12 @@ impl BenchmarkPanel {
                 }
                 CodeBenchmarkEvent::Cancelled => {
                     self.code_state.code_running = false;
-                    self.code_state.code_output.push_str("\nCancelled\n");
+                    self.live_output.push_str("\nCancelled\n");
                 }
                 CodeBenchmarkEvent::Error { message } => {
                     self.error = Some(message.clone());
                     self.code_state.code_running = false;
-                    self.code_state.code_output.push_str(&format!("\nError: {}\n", message));
+                    self.live_output.push_str(&format!("\nError: {}\n", message));
                 }
             }
         }

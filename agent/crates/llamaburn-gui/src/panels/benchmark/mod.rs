@@ -360,7 +360,7 @@ impl BenchmarkPanel {
             config_panel_expanded: true,
             config_panel_height: 280.0,
             live_output_expanded: true,
-            live_output_height: 200.0,
+            live_output_height: 2000.0, // Large default to fill available space
 
             // Effect detection
             selected_effect_tool: EffectDetectionTool::default(),
@@ -616,7 +616,6 @@ impl BenchmarkPanel {
             let heights = [0.0, [40.0, 230.0][self.effects_rack_expanded as usize]];
             heights[is_audio as usize]
         };
-        let effects_rack_height = 0.0;
 
         // Live output takes remaining space (minus effects rack)
         self.render_live_output_with_reserved(ui, effects_rack_height);
@@ -669,78 +668,91 @@ impl BenchmarkPanel {
     }
 
     fn render_live_output_with_reserved(&mut self, ui: &mut egui::Ui, reserved_height: f32) {
-        // Build header text with progress indicator
+        // Header row with Clear button
         let header_text = match self.progress.is_empty() {
             true => "📋 Live Output".to_string(),
             false => format!("📋 Live Output — {}", self.progress),
         };
 
-        let header = egui::CollapsingHeader::new(
-            egui::RichText::new(header_text).strong(),
-        )
-        .default_open(self.live_output_expanded)
-        .show(ui, |ui| {
-            self.live_output_expanded = true;
-
-            // Calculate available height
-            let available_height = ui.available_height() - 10.0 - reserved_height;
-            let content_height = self.live_output_height.clamp(80.0, available_height.max(100.0));
-
-            egui::ScrollArea::vertical()
-                .max_height(content_height)
-                .auto_shrink([false, false])
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.live_output.as_str())
-                            .font(egui::TextStyle::Monospace)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(10),
-                    );
-                });
-
-            // Resize handle
-            let resize_id = ui.id().with("live_output_resize");
-            let resize_rect = ui.available_rect_before_wrap();
-            let handle_rect = egui::Rect::from_min_size(
-                egui::pos2(resize_rect.left(), resize_rect.top()),
-                egui::vec2(resize_rect.width(), 8.0),
-            );
-
-            let response = ui.interact(handle_rect, resize_id, egui::Sense::drag());
-
-            // Visual indicator
-            let handle_color = match response.hovered() || response.dragged() {
-                true => ui.style().visuals.strong_text_color(),
-                false => ui.style().visuals.weak_text_color(),
-            };
-            ui.painter().hline(
-                handle_rect.x_range(),
-                handle_rect.center().y,
-                egui::Stroke::new(2.0, handle_color),
-            );
-            ui.painter().text(
-                handle_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "⋯",
-                egui::FontId::proportional(10.0),
-                handle_color,
-            );
-
-            if response.dragged() {
-                self.live_output_height += response.drag_delta().y;
-                self.live_output_height = self.live_output_height.clamp(80.0, 800.0);
+        ui.horizontal(|ui| {
+            // Toggle expand/collapse on click
+            let toggle = ui.selectable_label(false, egui::RichText::new(
+                if self.live_output_expanded { "▼" } else { "▶" }
+            ));
+            if toggle.clicked() {
+                self.live_output_expanded = !self.live_output_expanded;
             }
 
-            // Change cursor on hover
-            if response.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            ui.strong(&header_text);
+
+            ui.add_space(10.0);
+            if ui.small_button("Clear").clicked() {
+                self.live_output.clear();
             }
         });
 
-        // Track collapsed state
-        if !header.fully_open() {
-            self.live_output_expanded = false;
+        if !self.live_output_expanded {
+            return;
+        }
+
+        // Fill available height (minus padding and reserved space for panels below)
+        let available_height = (ui.available_height() - reserved_height - 20.0).max(100.0);
+        let content_height = self.live_output_height.min(available_height).max(80.0);
+
+        // Use clip_rect width to account for side panels (like GPU Monitor)
+        let text_width = ui.clip_rect().width().min(ui.available_width()) - 30.0;
+        egui::ScrollArea::vertical()
+            .max_height(content_height)
+            .auto_shrink([false, false])
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.live_output.as_str())
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(text_width)
+                        .layouter(&mut |ui, string, wrap_width| {
+                            let mut layout_job = egui::text::LayoutJob::simple(
+                                string.to_owned(),
+                                egui::FontId::monospace(12.0),
+                                ui.visuals().text_color(),
+                                wrap_width,
+                            );
+                            layout_job.wrap = egui::text::TextWrapping {
+                                max_width: wrap_width,
+                                ..Default::default()
+                            };
+                            ui.fonts(|f| f.layout_job(layout_job))
+                        }),
+                );
+            });
+
+        // Resize handle
+        let resize_id = ui.id().with("live_output_resize");
+        let resize_rect = ui.available_rect_before_wrap();
+        let handle_rect = egui::Rect::from_min_size(
+            egui::pos2(resize_rect.left(), resize_rect.top()),
+            egui::vec2(resize_rect.width(), 8.0),
+        );
+
+        let response = ui.interact(handle_rect, resize_id, egui::Sense::drag());
+
+        let handle_color = match response.hovered() || response.dragged() {
+            true => ui.style().visuals.strong_text_color(),
+            false => ui.style().visuals.weak_text_color(),
+        };
+        ui.painter().hline(
+            handle_rect.x_range(),
+            handle_rect.center().y,
+            egui::Stroke::new(2.0, handle_color),
+        );
+
+        if response.dragged() {
+            self.live_output_height += response.drag_delta().y;
+            self.live_output_height = self.live_output_height.clamp(80.0, available_height);
+        }
+
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
         }
     }
 

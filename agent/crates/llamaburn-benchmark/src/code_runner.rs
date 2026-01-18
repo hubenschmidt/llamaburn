@@ -184,28 +184,32 @@ impl CodeBenchmarkRunner {
         // Extract code from response (remove markdown fences if present)
         let code = extract_code(&generated_code);
 
-        // Run tests
-        let test_results = self
-            .run_tests(&code, config.language, problem, tx)
-            .await;
-
+        // Run tests if enabled
         let (tests_passed, tests_total, execution_time_ms, compilation_error, runtime_error) =
-            match test_results {
-                Ok(results) => {
-                    let passed = results.iter().filter(|r| r.passed).count() as u32;
-                    let total = results.len() as u32;
-                    let exec_time = results.iter().map(|r| r.execution_time_ms).sum();
-                    let comp_err = results
-                        .iter()
-                        .find(|r| r.error.as_ref().map(|e| e.contains("Compilation")).unwrap_or(false))
-                        .and_then(|r| r.error.clone());
-                    let run_err = results
-                        .iter()
-                        .find(|r| r.error.is_some() && !r.error.as_ref().unwrap().contains("Compilation"))
-                        .and_then(|r| r.error.clone());
-                    (passed, total, exec_time, comp_err, run_err)
+            if config.run_tests {
+                let test_results = self
+                    .run_tests(&code, config.language, problem, tx)
+                    .await;
+
+                match test_results {
+                    Ok(results) => {
+                        let passed = results.iter().filter(|r| r.passed).count() as u32;
+                        let total = results.len() as u32;
+                        let exec_time = results.iter().map(|r| r.execution_time_ms).sum();
+                        let comp_err = results
+                            .iter()
+                            .find(|r| r.error.as_ref().map(|e| e.contains("Compilation")).unwrap_or(false))
+                            .and_then(|r| r.error.clone());
+                        let run_err = results
+                            .iter()
+                            .find(|r| r.error.is_some() && !r.error.as_ref().unwrap().contains("Compilation"))
+                            .and_then(|r| r.error.clone());
+                        (passed, total, exec_time, comp_err, run_err)
+                    }
+                    Err(e) => (0, problem.test_cases.len() as u32, 0.0, Some(e), None),
                 }
-                Err(e) => (0, problem.test_cases.len() as u32, 0.0, Some(e), None),
+            } else {
+                (0, 0, 0.0, None, None)
             };
 
         Ok(CodeBenchmarkMetrics {
@@ -325,16 +329,63 @@ Examples:
     }
 }
 
-fn extract_code(response: &str) -> String {
-    // Remove markdown code fences if present
-    let trimmed = response.trim();
+/// Run tests only on existing code (no code generation).
+/// Returns (tests_passed, tests_total, execution_time_ms)
+pub async fn run_tests_only(
+    code: &str,
+    language: Language,
+    problem: &CodeProblem,
+    tx: mpsc::Sender<CodeBenchmarkEvent>,
+) -> std::result::Result<(u32, u32, f64), String> {
+    let executor = CodeExecutor::default();
+    let test_cases = &problem.test_cases;
 
-    if trimmed.starts_with("```") {
-        let lines: Vec<&str> = trimmed.lines().collect();
-        let start = lines.iter().position(|l| l.starts_with("```")).map(|i| i + 1).unwrap_or(0);
-        let end = lines.iter().rposition(|l| l.trim() == "```").unwrap_or(lines.len());
-        return lines[start..end].join("\n");
+    for (idx, _) in test_cases.iter().enumerate() {
+        let _ = tx
+            .send(CodeBenchmarkEvent::ExecutingTests {
+                current: idx as u32 + 1,
+                total: test_cases.len() as u32,
+            })
+            .await;
     }
 
-    trimmed.to_string()
+    let test_results = executor
+        .run_tests(code, language, test_cases, problem.time_limit_ms)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    for result in &test_results {
+        let _ = tx
+            .send(CodeBenchmarkEvent::TestResult {
+                passed: result.passed,
+                error: result.error.clone(),
+            })
+            .await;
+    }
+
+    let passed = test_results.iter().filter(|r| r.passed).count() as u32;
+    let total = test_results.len() as u32;
+    let exec_time = test_results.iter().map(|r| r.execution_time_ms).sum();
+
+    Ok((passed, total, exec_time))
+}
+
+fn extract_code(response: &str) -> String {
+    // Find first code block in response (handles thinking text before code)
+    let lines: Vec<&str> = response.lines().collect();
+
+    // Find opening fence (```python, ```rust, etc.)
+    let start = lines.iter().position(|l| l.trim().starts_with("```"));
+    let Some(start_idx) = start else {
+        return response.trim().to_string();
+    };
+
+    // Find closing fence after start
+    let end = lines[start_idx + 1..]
+        .iter()
+        .position(|l| l.trim() == "```")
+        .map(|i| start_idx + 1 + i)
+        .unwrap_or(lines.len());
+
+    lines[start_idx + 1..end].join("\n")
 }

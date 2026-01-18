@@ -138,6 +138,12 @@ pub struct CodeBenchmarkConfig {
     pub max_tokens: Option<u32>,
     #[serde(default = "default_warmup")]
     pub warmup_runs: u32,
+    #[serde(default = "default_run_tests")]
+    pub run_tests: bool,
+}
+
+fn default_run_tests() -> bool {
+    true
 }
 
 fn default_temperature() -> f32 {
@@ -157,6 +163,7 @@ impl Default for CodeBenchmarkConfig {
             temperature: default_temperature(),
             max_tokens: None,
             warmup_runs: default_warmup(),
+            run_tests: default_run_tests(),
         }
     }
 }
