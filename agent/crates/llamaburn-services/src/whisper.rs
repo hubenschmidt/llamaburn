@@ -8,11 +8,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
-#[cfg(feature = "whisper")]
 use std::time::Instant;
 
 use thiserror::Error;
-#[cfg(feature = "whisper")]
 use tracing::{debug, info, warn};
 
 use llamaburn_core::{AudioBenchmarkMetrics, WhisperModel};
@@ -29,8 +27,6 @@ pub enum WhisperError {
     TranscriptionError(String),
     #[error("Audio format not supported: {0}")]
     UnsupportedFormat(String),
-    #[error("Whisper feature not enabled")]
-    FeatureNotEnabled,
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -63,7 +59,6 @@ pub enum WhisperEvent {
 pub struct WhisperService {
     model_dir: PathBuf,
     current_model: Option<WhisperModel>,
-    #[cfg(feature = "whisper")]
     context: Option<whisper_rs::WhisperContext>,
 }
 
@@ -73,7 +68,6 @@ impl WhisperService {
         Self {
             model_dir: model_dir.to_path_buf(),
             current_model: None,
-            #[cfg(feature = "whisper")]
             context: None,
         }
     }
@@ -93,11 +87,6 @@ impl WhisperService {
         self.model_path(model).exists()
     }
 
-    pub fn is_whisper_enabled() -> bool {
-        cfg!(feature = "whisper")
-    }
-
-    #[cfg(feature = "whisper")]
     pub fn load_model(&mut self, model: WhisperModel) -> Result<Duration, WhisperError> {
         let path = self.model_path(model);
 
@@ -128,11 +117,6 @@ impl WhisperService {
         Ok(elapsed)
     }
 
-    #[cfg(not(feature = "whisper"))]
-    pub fn load_model(&mut self, _model: WhisperModel) -> Result<Duration, WhisperError> {
-        Err(WhisperError::FeatureNotEnabled)
-    }
-
     pub fn current_model(&self) -> Option<WhisperModel> {
         self.current_model
     }
@@ -140,24 +124,16 @@ impl WhisperService {
     /// Unload the currently loaded model to free memory
     pub fn unload_model(&mut self) {
         self.current_model = None;
-        #[cfg(feature = "whisper")]
         {
             self.context = None;
         }
     }
 
-    #[cfg(feature = "whisper")]
     pub fn transcribe(&self, audio_path: &Path) -> Result<TranscriptionResult, WhisperError> {
         let (result, _) = self.transcribe_with_timing(audio_path)?;
         Ok(result)
     }
 
-    #[cfg(not(feature = "whisper"))]
-    pub fn transcribe(&self, _audio_path: &Path) -> Result<TranscriptionResult, WhisperError> {
-        Err(WhisperError::FeatureNotEnabled)
-    }
-
-    #[cfg(feature = "whisper")]
     pub fn transcribe_with_timing(
         &self,
         audio_path: &Path,
@@ -222,16 +198,7 @@ impl WhisperService {
         Ok((result, elapsed))
     }
 
-    #[cfg(not(feature = "whisper"))]
-    pub fn transcribe_with_timing(
-        &self,
-        _audio_path: &Path,
-    ) -> Result<(TranscriptionResult, Duration), WhisperError> {
-        Err(WhisperError::FeatureNotEnabled)
-    }
-
     /// Transcribe from raw 16kHz mono f32 samples (for captured microphone audio)
-    #[cfg(feature = "whisper")]
     pub fn transcribe_samples(&self, samples: &[f32]) -> Result<(TranscriptionResult, Duration), WhisperError> {
         use std::time::Instant;
 
@@ -292,13 +259,7 @@ impl WhisperService {
         Ok((result, elapsed))
     }
 
-    #[cfg(not(feature = "whisper"))]
-    pub fn transcribe_samples(&self, _samples: &[f32]) -> Result<(TranscriptionResult, Duration), WhisperError> {
-        Err(WhisperError::FeatureNotEnabled)
-    }
-
     /// Transcribe with verbose output and streaming segment callback
-    #[cfg(feature = "whisper")]
     pub fn transcribe_samples_streaming(
         &self,
         samples: &[f32],
@@ -378,16 +339,6 @@ impl WhisperService {
         Ok((result, elapsed))
     }
 
-    #[cfg(not(feature = "whisper"))]
-    pub fn transcribe_samples_streaming(
-        &self,
-        _samples: &[f32],
-        _segment_tx: std::sync::mpsc::Sender<String>,
-    ) -> Result<(TranscriptionResult, Duration), WhisperError> {
-        Err(WhisperError::FeatureNotEnabled)
-    }
-
-    #[cfg(feature = "whisper")]
     fn load_audio(&self, path: &Path) -> Result<Vec<f32>, WhisperError> {
         let ext = path
             .extension()
@@ -402,7 +353,6 @@ impl WhisperService {
         }
     }
 
-    #[cfg(feature = "whisper")]
     fn load_wav(&self, path: &Path) -> Result<Vec<f32>, WhisperError> {
         let reader = hound::WavReader::open(path)
             .map_err(|e| WhisperError::AudioLoadError(e.to_string()))?;
@@ -423,7 +373,6 @@ impl WhisperService {
         self.resample(&mono, spec.sample_rate, 16000)
     }
 
-    #[cfg(feature = "whisper")]
     fn read_wav_samples(
         &self,
         reader: hound::WavReader<std::io::BufReader<std::fs::File>>,
@@ -442,7 +391,6 @@ impl WhisperService {
             .collect())
     }
 
-    #[cfg(feature = "whisper")]
     fn to_mono(&self, samples: &[f32], channels: u16) -> Vec<f32> {
         if channels == 1 {
             return samples.to_vec();
@@ -454,7 +402,6 @@ impl WhisperService {
             .collect()
     }
 
-    #[cfg(feature = "whisper")]
     fn load_with_symphonia(&self, path: &Path) -> Result<Vec<f32>, WhisperError> {
         use symphonia::core::codecs::DecoderOptions;
         use symphonia::core::formats::FormatOptions;
@@ -499,7 +446,6 @@ impl WhisperService {
         self.resample(&mono, sample_rate, 16000)
     }
 
-    #[cfg(feature = "whisper")]
     fn decode_all_packets(
         &self,
         format: &mut Box<dyn symphonia::core::formats::FormatReader>,
@@ -540,7 +486,6 @@ impl WhisperService {
         }
     }
 
-    #[cfg(feature = "whisper")]
     fn resample(&self, input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, WhisperError> {
         use rubato::{FftFixedIn, Resampler};
 
@@ -581,7 +526,6 @@ impl WhisperService {
         Ok(output)
     }
 
-    #[cfg(feature = "whisper")]
     pub fn run_benchmark(
         &mut self,
         model: WhisperModel,
@@ -651,18 +595,6 @@ impl WhisperService {
         }
 
         Ok(metrics)
-    }
-
-    #[cfg(not(feature = "whisper"))]
-    pub fn run_benchmark(
-        &mut self,
-        _model: WhisperModel,
-        _audio_path: &Path,
-        _iterations: u32,
-        _warmup: u32,
-        _tx: Option<Sender<WhisperEvent>>,
-    ) -> Result<Vec<AudioBenchmarkMetrics>, WhisperError> {
-        Err(WhisperError::FeatureNotEnabled)
     }
 }
 

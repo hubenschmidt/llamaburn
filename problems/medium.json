@@ -1,0 +1,86 @@
+{
+  "name": "Medium Algorithm Problems",
+  "problems": [
+    {
+      "id": "longest-substring",
+      "title": "Longest Substring Without Repeating Characters",
+      "difficulty": "medium",
+      "description": "Given a string s, find the length of the longest substring without repeating characters.",
+      "time_limit_ms": 5000,
+      "signatures": {
+        "python": "def length_of_longest_substring(s: str) -> int:",
+        "javascript": "function lengthOfLongestSubstring(s)"
+      },
+      "test_cases": [
+        { "input": "[\"abcabcbb\"]", "expected": "3" },
+        { "input": "[\"bbbbb\"]", "expected": "1" },
+        { "input": "[\"pwwkew\"]", "expected": "3" },
+        { "input": "[\"\"]", "expected": "0" }
+      ]
+    },
+    {
+      "id": "add-two-numbers",
+      "title": "Add Two Numbers",
+      "difficulty": "medium",
+      "description": "Given two non-negative integers as arrays of digits in reverse order, add them and return the sum as an array of digits in reverse order.",
+      "time_limit_ms": 5000,
+      "signatures": {
+        "python": "def add_two_numbers(l1: list[int], l2: list[int]) -> list[int]:",
+        "javascript": "function addTwoNumbers(l1, l2)"
+      },
+      "test_cases": [
+        { "input": "[[2,4,3], [5,6,4]]", "expected": "[7,0,8]" },
+        { "input": "[[0], [0]]", "expected": "[0]" },
+        { "input": "[[9,9,9], [1]]", "expected": "[0,0,0,1]" }
+      ]
+    },
+    {
+      "id": "three-sum",
+      "title": "3Sum",
+      "difficulty": "medium",
+      "description": "Given an array nums, return all unique triplets [nums[i], nums[j], nums[k]] such that i != j != k and nums[i] + nums[j] + nums[k] == 0.",
+      "time_limit_ms": 10000,
+      "signatures": {
+        "python": "def three_sum(nums: list[int]) -> list[list[int]]:",
+        "javascript": "function threeSum(nums)"
+      },
+      "test_cases": [
+        { "input": "[[-1,0,1,2,-1,-4]]", "expected": "[[-1,-1,2],[-1,0,1]]" },
+        { "input": "[[0,1,1]]", "expected": "[]" },
+        { "input": "[[0,0,0]]", "expected": "[[0,0,0]]" }
+      ]
+    },
+    {
+      "id": "container-water",
+      "title": "Container With Most Water",
+      "difficulty": "medium",
+      "description": "Given an array height where height[i] is the height of a line at position i, find two lines that together with the x-axis forms a container that holds the most water.",
+      "time_limit_ms": 5000,
+      "signatures": {
+        "python": "def max_area(height: list[int]) -> int:",
+        "javascript": "function maxArea(height)"
+      },
+      "test_cases": [
+        { "input": "[[1,8,6,2,5,4,8,3,7]]", "expected": "49" },
+        { "input": "[[1,1]]", "expected": "1" },
+        { "input": "[[4,3,2,1,4]]", "expected": "16" }
+      ]
+    },
+    {
+      "id": "group-anagrams",
+      "title": "Group Anagrams",
+      "difficulty": "medium",
+      "description": "Given an array of strings, group the anagrams together. An anagram is a word formed by rearranging the letters of another word.",
+      "time_limit_ms": 5000,
+      "signatures": {
+        "python": "def group_anagrams(strs: list[str]) -> list[list[str]]:",
+        "javascript": "function groupAnagrams(strs)"
+      },
+      "test_cases": [
+        { "input": "[[\"eat\",\"tea\",\"tan\",\"ate\",\"nat\",\"bat\"]]", "expected": "[[\"eat\",\"tea\",\"ate\"],[\"tan\",\"nat\"],[\"bat\"]]" },
+        { "input": "[[\"\"]]", "expected": "[[\"\"]]" },
+        { "input": "[[\"a\"]]", "expected": "[[\"a\"]]" }
+      ]
+    }
+  ]
+}

@@ -1,8 +1,5 @@
-#[cfg(feature = "audio-input")]
 mod audio_input;
-#[cfg(feature = "audio-input")]
 mod audio_output;
-#[cfg(feature = "audio-input")]
 pub mod audio_effects;
 mod benchmark;
 mod effect_detection;
@@ -13,9 +10,7 @@ mod ollama;
 mod settings;
 mod whisper;
 
-#[cfg(feature = "audio-input")]
 pub use audio_input::{AudioCaptureConfig, AudioDevice, AudioInputError, AudioInputService, AudioSampleFormat, DeviceType, StreamHandle};
-#[cfg(feature = "audio-input")]
 pub use audio_output::{AudioOutputError, AudioOutputService, MonitorHandle, PlaybackHandle};
 pub use benchmark::BenchmarkService;
 pub use effect_detection::{EffectDetectionError, EffectDetectionService, get_llm_blind_analysis, build_llm_analysis_prompt};

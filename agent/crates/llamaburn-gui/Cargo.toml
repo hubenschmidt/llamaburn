@@ -49,8 +49,3 @@ os_pipe = "1.2"
 libc = "0.2"
 hound = "3.5"
 
-[features]
-default = []
-whisper = ["llamaburn-services/whisper"]
-whisper-gpu = ["llamaburn-services/whisper-gpu"]
-audio-input = ["llamaburn-services/audio-input"]

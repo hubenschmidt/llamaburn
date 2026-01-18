@@ -1,0 +1,426 @@
+use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
+
+use eframe::egui;
+
+use llamaburn_benchmark::{load_all_problem_sets, CodeBenchmarkEvent, CodeBenchmarkRunner};
+use llamaburn_core::{
+    CodeBenchmarkConfig, CodeBenchmarkMetrics, CodeBenchmarkSummary, CodeProblem, Difficulty,
+    Language, ProblemSet,
+};
+
+use super::BenchmarkPanel;
+
+/// Code benchmark specific state
+#[derive(Default)]
+pub struct CodeBenchmarkState {
+    pub language: Language,
+    pub problem_sets: Vec<ProblemSet>,
+    pub selected_problem_set_idx: usize,
+    pub selected_problem_ids: Vec<String>,
+    pub code_temperature: f32,
+    pub code_max_tokens: u32,
+
+    // Runtime state
+    pub code_running: bool,
+    pub code_rx: Option<Receiver<CodeBenchmarkEvent>>,
+    pub current_problem: Option<String>,
+    pub generated_code: String,
+    pub code_metrics: Vec<CodeBenchmarkMetrics>,
+    pub code_summary: Option<CodeBenchmarkSummary>,
+    pub code_output: String,
+
+    // Rankings
+    pub code_leaderboard: Vec<(String, f64)>,
+}
+
+impl CodeBenchmarkState {
+    pub fn new() -> Self {
+        Self {
+            language: Language::Python,
+            problem_sets: load_problem_sets_from_disk(),
+            selected_problem_set_idx: 0,
+            selected_problem_ids: Vec::new(),
+            code_temperature: 0.2,
+            code_max_tokens: 2048,
+            code_running: false,
+            code_rx: None,
+            current_problem: None,
+            generated_code: String::new(),
+            code_metrics: Vec::new(),
+            code_summary: None,
+            code_output: String::new(),
+            code_leaderboard: Vec::new(),
+        }
+    }
+
+    pub fn current_problems(&self) -> &[CodeProblem] {
+        self.problem_sets
+            .get(self.selected_problem_set_idx)
+            .map(|ps| ps.problems.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub fn selected_problems(&self) -> Vec<&CodeProblem> {
+        self.current_problems()
+            .iter()
+            .filter(|p| self.selected_problem_ids.contains(&p.id))
+            .collect()
+    }
+}
+
+impl BenchmarkPanel {
+    pub fn render_code_config(&mut self, ui: &mut egui::Ui) {
+        let disabled = self.code_state.code_running || self.loading_models;
+
+        egui::Grid::new("code_config_grid")
+            .num_columns(2)
+            .spacing([10.0, 8.0])
+            .show(ui, |ui| {
+                // Model selection
+                ui.label("Model:");
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(!disabled, |ui| {
+                        let selected_text = match (
+                            self.loading_models,
+                            self.models.is_empty(),
+                            self.selected_model.is_empty(),
+                        ) {
+                            (true, _, _) => "Loading models...",
+                            (_, true, _) => "No models found",
+                            (_, _, true) => "Select model...",
+                            _ => &self.selected_model,
+                        };
+
+                        egui::ComboBox::from_id_salt("code_model_select")
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                for model in &self.models {
+                                    ui.selectable_value(
+                                        &mut self.selected_model,
+                                        model.clone(),
+                                        model,
+                                    );
+                                }
+                            });
+                    });
+
+                    if self.loading_models {
+                        ui.spinner();
+                    }
+                });
+                ui.end_row();
+
+                // Language selection
+                ui.label("Language:");
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(!disabled, |ui| {
+                        egui::ComboBox::from_id_salt("language_select")
+                            .selected_text(self.code_state.language.label())
+                            .show_ui(ui, |ui| {
+                                for lang in Language::all() {
+                                    ui.selectable_value(
+                                        &mut self.code_state.language,
+                                        *lang,
+                                        lang.label(),
+                                    );
+                                }
+                            });
+                    });
+                });
+                ui.end_row();
+
+                // Temperature
+                ui.label("Temperature:");
+                ui.add_enabled(
+                    !disabled,
+                    egui::DragValue::new(&mut self.code_state.code_temperature)
+                        .range(0.0..=2.0)
+                        .speed(0.05),
+                );
+                ui.end_row();
+
+                // Max tokens
+                ui.label("Max Tokens:");
+                ui.add_enabled(
+                    !disabled,
+                    egui::DragValue::new(&mut self.code_state.code_max_tokens)
+                        .range(256..=8192),
+                );
+                ui.end_row();
+            });
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(5.0);
+
+        // Problem selection
+        ui.label(egui::RichText::new("Problems").strong());
+        ui.add_space(5.0);
+
+        let problems = self.code_state.current_problems().to_vec();
+        egui::ScrollArea::vertical()
+            .max_height(150.0)
+            .show(ui, |ui| {
+                for problem in &problems {
+                    let is_selected = self.code_state.selected_problem_ids.contains(&problem.id);
+                    let difficulty_color = match problem.difficulty {
+                        Difficulty::Easy => egui::Color32::GREEN,
+                        Difficulty::Medium => egui::Color32::YELLOW,
+                        Difficulty::Hard => egui::Color32::RED,
+                    };
+
+                    ui.horizontal(|ui| {
+                        let mut selected = is_selected;
+                        if ui.add_enabled(!disabled, egui::Checkbox::new(&mut selected, "")).changed() {
+                            if selected {
+                                self.code_state.selected_problem_ids.push(problem.id.clone());
+                            } else {
+                                self.code_state.selected_problem_ids.retain(|id| id != &problem.id);
+                            }
+                        }
+
+                        ui.colored_label(difficulty_color, format!("[{}]", problem.difficulty.label()));
+                        ui.label(&problem.title);
+                    });
+                }
+            });
+
+        ui.add_space(10.0);
+
+        // Run button
+        let can_run = !self.code_state.code_running
+            && !self.selected_model.is_empty()
+            && !self.code_state.selected_problem_ids.is_empty();
+
+        ui.horizontal(|ui| {
+            if self.code_state.code_running {
+                if ui.button("Cancel").clicked() {
+                    self.cancel_code_benchmark();
+                }
+                ui.spinner();
+                ui.label(&self.progress);
+            } else if ui.add_enabled(can_run, egui::Button::new("Run Benchmark")).clicked() {
+                self.start_code_benchmark();
+            }
+
+            if !disabled {
+                ui.label(format!(
+                    "{} problem(s) selected",
+                    self.code_state.selected_problem_ids.len()
+                ));
+            }
+        });
+    }
+
+    pub fn render_code_results(&self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("Results").strong());
+
+        let Some(summary) = &self.code_state.code_summary else {
+            ui.label("No results yet");
+            return;
+        };
+
+        ui.label(format!(
+            "Pass Rate: {:.1}%",
+            summary.pass_rate * 100.0
+        ));
+        ui.label(format!(
+            "Solved: {}/{}",
+            summary.problems_solved, summary.problems_total
+        ));
+        ui.label(format!("Avg TPS: {:.1}", summary.avg_tps));
+        ui.label(format!(
+            "Avg Exec Time: {:.1}ms",
+            summary.avg_execution_time_ms
+        ));
+
+        if self.code_state.code_metrics.is_empty() {
+            return;
+        }
+
+        ui.add_space(10.0);
+        ui.label(egui::RichText::new("Per-Problem Results").small());
+
+        for metrics in &self.code_state.code_metrics {
+            let status = if metrics.tests_passed == metrics.tests_total {
+                "✅"
+            } else {
+                "❌"
+            };
+            ui.label(format!(
+                "{} {} ({}/{})",
+                status, metrics.problem_id, metrics.tests_passed, metrics.tests_total
+            ));
+        }
+    }
+
+    pub fn render_code_rankings(&self, ui: &mut egui::Ui) {
+        if self.code_state.code_leaderboard.is_empty() {
+            ui.label("No rankings yet");
+            return;
+        }
+
+        for (i, (model, pass_rate)) in self.code_state.code_leaderboard.iter().enumerate() {
+            ui.label(format!("{}. {} ({:.1}%)", i + 1, model, pass_rate * 100.0));
+        }
+    }
+
+    pub fn start_code_benchmark(&mut self) {
+        let problems: Vec<CodeProblem> = self
+            .code_state
+            .selected_problems()
+            .into_iter()
+            .cloned()
+            .collect();
+
+        if problems.is_empty() {
+            self.error = Some("No problems selected".to_string());
+            return;
+        }
+
+        let config = CodeBenchmarkConfig {
+            model_id: self.selected_model.clone(),
+            language: self.code_state.language,
+            problem_ids: problems.iter().map(|p| p.id.clone()).collect(),
+            temperature: self.code_state.code_temperature,
+            max_tokens: Some(self.code_state.code_max_tokens),
+            warmup_runs: self.warmup,
+        };
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.code_state.code_rx = Some(rx);
+        self.code_state.code_running = true;
+        self.code_state.code_output.clear();
+        self.code_state.code_metrics.clear();
+        self.code_state.code_summary = None;
+        self.code_state.generated_code.clear();
+        self.error = None;
+
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        self.cancel_token = Some(std::sync::Arc::new(cancel_token.clone()));
+
+        let ollama_host = self.ollama.host().to_string();
+
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let runner = CodeBenchmarkRunner::new(&ollama_host);
+                let (async_tx, mut async_rx) = tokio::sync::mpsc::channel(100);
+
+                tokio::spawn(async move {
+                    runner
+                        .run_streaming(&config, &problems, cancel_token, async_tx)
+                        .await;
+                });
+
+                while let Some(event) = async_rx.recv().await {
+                    if tx.send(event).is_err() {
+                        break;
+                    }
+                }
+            });
+        });
+    }
+
+    pub fn cancel_code_benchmark(&mut self) {
+        if let Some(token) = self.cancel_token.take() {
+            token.cancel();
+        }
+        self.code_state.code_running = false;
+    }
+
+    pub fn poll_code_benchmark(&mut self) {
+        let Some(rx) = &self.code_state.code_rx else {
+            return;
+        };
+
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                CodeBenchmarkEvent::Warmup { current, total } => {
+                    self.progress = format!("Warmup {}/{}", current, total);
+                }
+                CodeBenchmarkEvent::Problem { current, total, title } => {
+                    self.progress = format!("Problem {}/{}: {}", current, total, title);
+                    self.code_state.current_problem = Some(title);
+                    self.code_state.generated_code.clear();
+                }
+                CodeBenchmarkEvent::GeneratingCode => {
+                    self.code_state.code_output.push_str("Generating code...\n");
+                }
+                CodeBenchmarkEvent::Token { content } => {
+                    self.code_state.generated_code.push_str(&content);
+                    self.live_output.push_str(&content);
+                }
+                CodeBenchmarkEvent::ExecutingTests { current, total } => {
+                    self.code_state.code_output.push_str(&format!(
+                        "\nExecuting test {}/{}...\n",
+                        current, total
+                    ));
+                }
+                CodeBenchmarkEvent::TestResult { passed, error } => {
+                    let status = if passed { "✅ PASS" } else { "❌ FAIL" };
+                    self.code_state.code_output.push_str(&format!("{}\n", status));
+                    if let Some(e) = error {
+                        self.code_state.code_output.push_str(&format!("  Error: {}\n", e));
+                    }
+                }
+                CodeBenchmarkEvent::ProblemComplete { metrics } => {
+                    self.code_state.code_output.push_str(&format!(
+                        "\n--- {} complete: {}/{} tests passed ---\n\n",
+                        metrics.problem_id, metrics.tests_passed, metrics.tests_total
+                    ));
+                    self.code_state.code_metrics.push(metrics);
+                }
+                CodeBenchmarkEvent::Done { summary } => {
+                    self.code_state.code_summary = Some(summary.clone());
+                    self.code_state.code_running = false;
+                    self.code_state.code_output.push_str(&format!(
+                        "\n=== Benchmark Complete ===\nPass Rate: {:.1}%\nSolved: {}/{}\n",
+                        summary.pass_rate * 100.0,
+                        summary.problems_solved,
+                        summary.problems_total
+                    ));
+                }
+                CodeBenchmarkEvent::Cancelled => {
+                    self.code_state.code_running = false;
+                    self.code_state.code_output.push_str("\nCancelled\n");
+                }
+                CodeBenchmarkEvent::Error { message } => {
+                    self.error = Some(message.clone());
+                    self.code_state.code_running = false;
+                    self.code_state.code_output.push_str(&format!("\nError: {}\n", message));
+                }
+            }
+        }
+    }
+}
+
+fn load_problem_sets_from_disk() -> Vec<ProblemSet> {
+    let problems_dir = find_problems_dir();
+    let Some(dir) = problems_dir else {
+        tracing::warn!("Problems directory not found, using empty set");
+        return Vec::new();
+    };
+
+    load_all_problem_sets(&dir).unwrap_or_else(|e| {
+        tracing::error!("Failed to load problem sets: {}", e);
+        Vec::new()
+    })
+}
+
+fn find_problems_dir() -> Option<PathBuf> {
+    let candidates = [
+        PathBuf::from("problems"),
+        PathBuf::from("../problems"),
+        PathBuf::from("../../problems"),
+    ];
+
+    if let Some(found) = candidates.into_iter().find(|p| p.is_dir()) {
+        return Some(found);
+    }
+
+    let exe_path = std::env::current_exe().ok()?;
+    let from_exe = exe_path.parent()?.join("problems");
+    from_exe.is_dir().then_some(from_exe)
+}

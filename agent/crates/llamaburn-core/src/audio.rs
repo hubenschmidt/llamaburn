@@ -226,9 +226,9 @@ impl AudioBenchmarkResult {
 /// Available audio effect detection tools
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum EffectDetectionTool {
-    #[default]
     FxEncoderPlusPlus,  // Sony Research - best documented
     OpenAmp,            // Crowd-sourced effect models
+    #[default]
     Llm2FxTools,        // LLM-based effect prediction
 }
 

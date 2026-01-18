@@ -11,30 +11,14 @@ sudo apt install cmake clang libasound2-dev \
     libxkbcommon-dev libgl1-mesa-dev libwayland-dev
 ```
 
-### Build with GPU Support (ROCm)
-
-For AMD GPUs (7900 XT, etc.) with ROCm:
+### Build
 
 ```bash
 cd agent
-
-# Release build with ROCm GPU acceleration
-cargo build --release -p llamaburn-gui --features whisper-gpu,audio-input
+cargo build --release -p llamaburn-gui
 ```
 
-### Build with CPU Only
-
-```bash
-cargo build --release -p llamaburn-gui --features whisper,audio-input
-```
-
-### Feature Flags
-
-| Feature | Description |
-|---------|-------------|
-| `whisper` | CPU-only Whisper transcription |
-| `whisper-gpu` | ROCm GPU-accelerated (hipBLAS) |
-| `audio-input` | Live microphone recording (requires libasound2-dev) |
+Includes ROCm GPU-accelerated Whisper (hipBLAS) and live microphone recording by default.
 
 ## Development (Hot Reload)
 
@@ -44,14 +28,8 @@ cd agent
 # Install cargo-watch (once)
 cargo install cargo-watch
 
-# Run with hot reload (no audio features)
+# Run with hot reload
 cargo watch -x 'run -p llamaburn-gui'
-
-# Run with hot reload + GPU audio + mic recording
-cargo watch -x 'run -p llamaburn-gui --features whisper-gpu,audio-input'
-
-# Run with hot reload + CPU audio + mic recording
-cargo watch -x 'run -p llamaburn-gui --features whisper,audio-input'
 ```
 
 Changes to any `.rs` file trigger automatic rebuild (~1-2s incremental).
@@ -89,7 +67,7 @@ cd agent
 cargo build --release -p llamaburn-gui
 ```
 
-Output: `target/release/llamaburn-gui`
+Binary: `target/release/llamaburn-gui`
 
 ## Project Structure
 

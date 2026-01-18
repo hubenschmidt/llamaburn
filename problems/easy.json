@@ -1,0 +1,86 @@
+{
+  "name": "Easy Algorithm Problems",
+  "problems": [
+    {
+      "id": "two-sum",
+      "title": "Two Sum",
+      "difficulty": "easy",
+      "description": "Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to target. You may assume that each input would have exactly one solution, and you may not use the same element twice.",
+      "time_limit_ms": 5000,
+      "signatures": {
+        "python": "def two_sum(nums: list[int], target: int) -> list[int]:",
+        "javascript": "function twoSum(nums, target)"
+      },
+      "test_cases": [
+        { "input": "[[2,7,11,15], 9]", "expected": "[0,1]" },
+        { "input": "[[3,2,4], 6]", "expected": "[1,2]" },
+        { "input": "[[3,3], 6]", "expected": "[0,1]" }
+      ]
+    },
+    {
+      "id": "reverse-string",
+      "title": "Reverse String",
+      "difficulty": "easy",
+      "description": "Write a function that reverses a string. The input string is given as an array of characters.",
+      "time_limit_ms": 5000,
+      "signatures": {
+        "python": "def reverse_string(s: str) -> str:",
+        "javascript": "function reverseString(s)"
+      },
+      "test_cases": [
+        { "input": "[\"hello\"]", "expected": "\"olleh\"" },
+        { "input": "[\"world\"]", "expected": "\"dlrow\"" },
+        { "input": "[\"a\"]", "expected": "\"a\"" }
+      ]
+    },
+    {
+      "id": "fizzbuzz",
+      "title": "FizzBuzz",
+      "difficulty": "easy",
+      "description": "Given an integer n, return 'Fizz' if n is divisible by 3, 'Buzz' if divisible by 5, 'FizzBuzz' if divisible by both, otherwise return n as a string.",
+      "time_limit_ms": 5000,
+      "signatures": {
+        "python": "def fizzbuzz(n: int) -> str:",
+        "javascript": "function fizzBuzz(n)"
+      },
+      "test_cases": [
+        { "input": "[3]", "expected": "\"Fizz\"" },
+        { "input": "[5]", "expected": "\"Buzz\"" },
+        { "input": "[15]", "expected": "\"FizzBuzz\"" },
+        { "input": "[7]", "expected": "\"7\"" }
+      ]
+    },
+    {
+      "id": "palindrome-check",
+      "title": "Valid Palindrome",
+      "difficulty": "easy",
+      "description": "Given a string s, return true if it is a palindrome (reads the same forwards and backwards), considering only alphanumeric characters and ignoring case.",
+      "time_limit_ms": 5000,
+      "signatures": {
+        "python": "def is_palindrome(s: str) -> bool:",
+        "javascript": "function isPalindrome(s)"
+      },
+      "test_cases": [
+        { "input": "[\"A man, a plan, a canal: Panama\"]", "expected": "true" },
+        { "input": "[\"race a car\"]", "expected": "false" },
+        { "input": "[\" \"]", "expected": "true" }
+      ]
+    },
+    {
+      "id": "max-profit",
+      "title": "Best Time to Buy and Sell Stock",
+      "difficulty": "easy",
+      "description": "Given an array prices where prices[i] is the price of a stock on the ith day, return the maximum profit you can achieve. You can only buy once and sell once.",
+      "time_limit_ms": 5000,
+      "signatures": {
+        "python": "def max_profit(prices: list[int]) -> int:",
+        "javascript": "function maxProfit(prices)"
+      },
+      "test_cases": [
+        { "input": "[[7,1,5,3,6,4]]", "expected": "5" },
+        { "input": "[[7,6,4,3,1]]", "expected": "0" },
+        { "input": "[[2,4,1]]", "expected": "2" }
+      ]
+    }
+  ]
+}

@@ -38,23 +38,18 @@ uuid = { version = "1.0", features = ["v4"] }
 urlencoding = "2.1"
 
 # Audio - STT (Whisper)
-# Note: Requires cmake and clang to build. Add "hipblas" feature for ROCm GPU support.
+# Note: Requires cmake and clang to build.
 # Install deps: sudo apt install cmake clang
-whisper-rs = { version = "0.15", optional = true }
+# hipblas feature enables ROCm GPU support
+whisper-rs = { version = "0.15", features = ["hipblas"] }
 hound = "3.5"
 symphonia = { version = "0.5", features = ["mp3", "flac", "aac"] }
 rubato = "0.15"
 
 # Audio input (microphone capture)
 # Requires libasound2-dev on Linux
-cpal = { version = "0.15", optional = true }
-ringbuf = { version = "0.4", optional = true }
+cpal = "0.15"
+ringbuf = "0.4"
 
 # Audio effects / DSP
-fundsp = { version = "0.18", optional = true }
-
-[features]
-default = []
-whisper = ["whisper-rs"]
-whisper-gpu = ["whisper", "whisper-rs/hipblas"]
-audio-input = ["cpal", "ringbuf", "fundsp"]
+fundsp = "0.18"
