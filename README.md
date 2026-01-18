@@ -1,4 +1,4 @@
-# llamaburn
+# LlamaBurn
 
 A benchmarking, profiling, and stress-testing suite for local LLM models with audio analysis capabilities.
 
