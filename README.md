@@ -15,6 +15,8 @@ A benchmarking, profiling, and stress-testing suite for local LLM models with au
 
 ![Capture Analyze](screenshot-capture-analyze.png)
 
+![Code Generation](screenshot-code-test.png)
+
 ![Effects Rack](screenshot-effects.png)
 
 ![LlamaBurn GUI](screenshot.png)
@@ -73,16 +75,94 @@ Built-in audio effects for signal chain testing:
 | **Capture** | Record audio, apply effects, detect |
 | **Live** | Real-time monitoring with effects |
 
+## Code Generation Benchmarking
+
+Benchmark LLM code generation capabilities with automatic test execution.
+
+### Signal Chain
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────┐
+│  Problem Set    │────▶│   LLM Generation │────▶│   Code Extraction   │
+│  (JSON config)  │     │   (Ollama API)   │     │   (Parse response)  │
+└─────────────────┘     └──────────────────┘     └─────────────────────┘
+                                                           │
+                                                           ▼
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────┐
+│    Results      │◀────│   Test Runner    │◀────│  Language Runtime   │
+│  (Pass/Fail)    │     │  (Compare output)│     │  (Python/JS/Rust/Go)│
+└─────────────────┘     └──────────────────┘     └─────────────────────┘
+```
+
+### Features
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| Problem Sets | ✅ Implemented | Load problems from JSON files |
+| Code Generation | ✅ Implemented | Stream tokens from Ollama models |
+| Code Extraction | ✅ Implemented | Parse code from markdown fences |
+| Python Execution | ✅ Implemented | Run tests via Python interpreter |
+| JavaScript Execution | ✅ Implemented | Run tests via Node.js |
+| Rust Execution | ✅ Implemented | Compile and run via rustc |
+| Go Execution | ✅ Implemented | Compile and run via go |
+| Test Validation | ✅ Implemented | Compare output against expected |
+| Metrics Collection | ✅ Implemented | TTFT, TPS, pass rate |
+| LLM-as-Judge | 🔄 Planned | Evaluate code quality with rubric |
+
+### Supported Languages
+
+| Language | Runtime | Requirements |
+|----------|---------|--------------|
+| Python | `python3` | Python 3.x installed |
+| JavaScript | `node` | Node.js installed |
+| Rust | `rustc` | Rust toolchain installed |
+| Go | `go` | Go toolchain installed |
+
+### Problem Set Format
+
+Problems are defined in JSON files under `problems/`:
+
+```json
+{
+  "name": "Algorithm Basics",
+  "problems": [
+    {
+      "id": "two-sum",
+      "title": "Two Sum",
+      "description": "Find two numbers that add up to target",
+      "difficulty": "easy",
+      "time_limit_ms": 5000,
+      "signatures": {
+        "python": "def two_sum(nums: list[int], target: int) -> list[int]:",
+        "javascript": "function twoSum(nums, target)"
+      },
+      "test_cases": [
+        { "input": "[2,7,11,15], 9", "expected": "[0,1]" }
+      ]
+    }
+  ]
+}
+```
+
+### Metrics
+
+| Metric | Description |
+|--------|-------------|
+| **TTFT** | Time to first token (ms) |
+| **TPS** | Tokens per second |
+| **Pass Rate** | Percentage of tests passed |
+| **Execution Time** | Time to run all tests (ms) |
+
 ## Audio Benchmarking
 
 | Mode | Status | Description |
 |------|--------|-------------|
 | STT (Speech-to-Text) | ✅ Implemented | Whisper transcription with RTF metrics |
 | Effect Detection | ✅ Implemented | ML-based audio effect identification |
-| TTS (Text-to-Speech) | Planned | Voice synthesis benchmarking |
-| Music Separation | Planned | Demucs stem isolation |
-| Music Transcription | Planned | Basic Pitch note detection |
-| Music Generation | Planned | AudioCraft/MusicGen |
+| TTS (Text-to-Speech) | 🔄 Planned | Voice synthesis benchmarking |
+| Music Separation | 🔄 Planned | Demucs stem isolation |
+| Music Transcription | 🔄 Planned | Basic Pitch note detection |
+| Music Generation | 🔄 Planned | AudioCraft/MusicGen |
 
 ### Building with Whisper (ROCm GPU)
 
