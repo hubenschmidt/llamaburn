@@ -15,7 +15,7 @@ A benchmarking, profiling, and stress-testing suite for local LLM models with au
 
 ![Capture Analyze](screenshot-capture-analyze.png)
 
-![Code Generation](screenshot-code-test.png)
+
 
 ![Effects Rack](screenshot-effects.png)
 
@@ -25,7 +25,7 @@ A benchmarking, profiling, and stress-testing suite for local LLM models with au
 
 Analyze audio to detect and identify applied effects using ML-based detection tools.
 
-### Signal Chain
+### Control Flow
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────┐
@@ -79,7 +79,9 @@ Built-in audio effects for signal chain testing:
 
 Benchmark LLM code generation capabilities with automatic test execution.
 
-### Signal Chain
+![Code Generation](screenshot-code-test.png)
+
+### COntrol Flow
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────┐
