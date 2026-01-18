@@ -1,4 +1,4 @@
-# LlamaBurn
+# llamaburn
 
 A benchmarking, profiling, and stress-testing suite for local LLM models with audio analysis capabilities.
 
@@ -19,7 +19,7 @@ A benchmarking, profiling, and stress-testing suite for local LLM models with au
 
 ![Effects Rack](screenshot-effects.png)
 
-![LlamaBurn GUI](screenshot.png)
+![llamaburn GUI](screenshot.png)
 
 ## Audio Signal Chain Analysis
 
