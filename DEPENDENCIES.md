@@ -74,16 +74,20 @@ pip install transformers>=4.40   # Qwen2-Audio
 # git clone https://github.com/Alec-Wright/OpenAmp
 ```
 
-## Feature Flags
+## Building
 
-Build with specific features enabled:
+All features are included by default:
 
-| Feature | Dependencies | Command |
-|---------|--------------|---------|
-| CPU Whisper | cmake, clang | `cargo build --features whisper` |
-| GPU Whisper (ROCm) | cmake, clang, ROCm | `cargo build --features whisper-gpu` |
-| Audio Input | libasound2-dev | `cargo build --features audio-input` |
-| Full | All above | `cargo build --features whisper-gpu,audio-input` |
+```bash
+cd agent
+cargo build --release -p llamaburn-gui
+```
+
+For development with hot reload:
+
+```bash
+cargo watch -x 'run -p llamaburn-gui'
+```
 
 ## Verification
 

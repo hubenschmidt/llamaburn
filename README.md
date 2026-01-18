@@ -164,20 +164,14 @@ Problems are defined in JSON files under `problems/`:
 | Music Transcription | 🔄 Planned | Basic Pitch note detection |
 | Music Generation | 🔄 Planned | AudioCraft/MusicGen |
 
-### Building with Whisper (ROCm GPU)
+### Whisper Setup
+
+Whisper is included by default. Models download automatically to `~/.local/share/llamaburn/whisper/`
 
 ```bash
-# Install build deps
+# Install build deps (for whisper-rs)
 sudo apt install cmake clang
-
-# Build with GPU acceleration (AMD ROCm)
-cargo build -p llamaburn-gui --features whisper-gpu
-
-# CPU-only build
-cargo build -p llamaburn-gui --features whisper
 ```
-
-Models download to `~/.local/share/llamaburn/whisper/`
 
 ### Benchmark Options
 
