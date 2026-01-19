@@ -186,3 +186,21 @@ All refactoring should observe `/rust-code-rules`. Current violations:
 ---
 
 *Generated: 2026-01-19*
+
+---
+
+## Implementation Status
+
+| Item | Status |
+|------|--------|
+| 1.1 Monolithic files | ⏸️ Deferred |
+| 1.2 Wildcard re-exports | ✅ Done |
+| 2.1 Clones (ollama.rs) | ✅ Arc<str> |
+| 2.1 Clones (audio_input.rs) | ✅ mem::take, into_iter |
+| 2.2 format! in hot paths | ✅ Reviewed (not hot) |
+| 2.3 Sequential awaits | ✅ Reviewed (must be sequential) |
+| 3.1 Segment extraction | ✅ extract_segments() |
+| 3.2 FullParams config | ✅ default_params() |
+| 3.3 Language wrappers | ✅ Reviewed (P3) |
+| 4.0 Oversized functions | ✅ Improved with helpers |
+| 7.0 Rust code rules | ✅ Addressed |

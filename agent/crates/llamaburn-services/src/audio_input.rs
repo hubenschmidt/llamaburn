@@ -306,7 +306,7 @@ impl AudioInputService {
             score
         };
 
-        let best = configs.iter()
+        let best = configs.into_iter()
             .min_by_key(|c| score_config(c))
             .ok_or_else(|| AudioInputError::ConfigError("No supported configs".to_string()))?;
 
@@ -315,7 +315,7 @@ impl AudioInputService {
         let max_rate = best.max_sample_rate().0;
         let actual_rate = config.sample_rate.clamp(min_rate, max_rate);
 
-        Ok(best.clone().with_sample_rate(cpal::SampleRate(actual_rate)))
+        Ok(best.with_sample_rate(cpal::SampleRate(actual_rate)))
     }
 
     /// Capture audio for a fixed duration, return 16kHz mono f32 samples (for Whisper)
@@ -364,7 +364,7 @@ impl AudioInputService {
 
         drop(stream);
 
-        let raw_samples = samples_collected.lock().unwrap().clone();
+        let raw_samples = std::mem::take(&mut *samples_collected.lock().unwrap());
         info!(samples = raw_samples.len(), "Capture complete");
 
         // Convert to mono and resample to 16kHz
@@ -403,8 +403,9 @@ impl AudioInputService {
         let samples_collected = Arc::new(std::sync::Mutex::new(Vec::with_capacity(expected_samples)));
         let samples_for_callback = samples_collected.clone();
 
-        let stream_config: StreamConfig = config.clone().into();
-        let stream = match config.sample_format() {
+        let sample_format = config.sample_format();
+        let stream_config: StreamConfig = config.into();
+        let stream = match sample_format {
             SampleFormat::F32 => Self::build_stream::<f32>(&device, &stream_config, tx),
             SampleFormat::I16 => Self::build_stream::<i16>(&device, &stream_config, tx),
             SampleFormat::I32 => Self::build_stream::<i32>(&device, &stream_config, tx),
@@ -423,7 +424,7 @@ impl AudioInputService {
 
         drop(stream);
 
-        let raw_samples = samples_collected.lock().unwrap().clone();
+        let raw_samples = std::mem::take(&mut *samples_collected.lock().unwrap());
         info!(samples = raw_samples.len(), sample_rate, channels, "Capture with config complete");
 
         Ok((raw_samples, sample_rate, channels))

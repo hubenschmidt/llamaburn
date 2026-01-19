@@ -186,30 +186,38 @@ impl CodeBenchmarkRunner {
 
         // Run tests if enabled
         let (tests_passed, tests_total, execution_time_ms, compilation_error, runtime_error) =
-            if config.run_tests {
-                let test_results = self
-                    .run_tests(&code, config.language, problem, tx)
-                    .await;
-
-                match test_results {
-                    Ok(results) => {
-                        let passed = results.iter().filter(|r| r.passed).count() as u32;
-                        let total = results.len() as u32;
-                        let exec_time = results.iter().map(|r| r.execution_time_ms).sum();
-                        let comp_err = results
-                            .iter()
-                            .find(|r| r.error.as_ref().map(|e| e.contains("Compilation")).unwrap_or(false))
-                            .and_then(|r| r.error.clone());
-                        let run_err = results
-                            .iter()
-                            .find(|r| r.error.is_some() && !r.error.as_ref().unwrap().contains("Compilation"))
-                            .and_then(|r| r.error.clone());
-                        (passed, total, exec_time, comp_err, run_err)
-                    }
-                    Err(e) => (0, problem.test_cases.len() as u32, 0.0, Some(e), None),
+            match config.run_tests {
+                false => (0, 0, 0.0, None, None),
+                true => {
+                    let results = self.run_tests(&code, config.language, problem, tx).await;
+                    let results = match results {
+                        Err(e) => return Ok(CodeBenchmarkMetrics {
+                            problem_id: problem.id.clone(),
+                            difficulty: problem.difficulty,
+                            ttft_ms,
+                            tokens_per_sec,
+                            tests_passed: 0,
+                            tests_total: problem.test_cases.len() as u32,
+                            execution_time_ms: 0.0,
+                            generated_code: code,
+                            compilation_error: Some(e),
+                            runtime_error: None,
+                        }),
+                        Ok(r) => r,
+                    };
+                    let passed = results.iter().filter(|r| r.passed).count() as u32;
+                    let total = results.len() as u32;
+                    let exec_time = results.iter().map(|r| r.execution_time_ms).sum();
+                    let comp_err = results.iter()
+                        .filter_map(|r| r.error.as_ref())
+                        .find(|e| e.contains("Compilation"))
+                        .cloned();
+                    let run_err = results.iter()
+                        .filter_map(|r| r.error.as_ref())
+                        .find(|e| !e.contains("Compilation"))
+                        .cloned();
+                    (passed, total, exec_time, comp_err, run_err)
                 }
-            } else {
-                (0, 0, 0.0, None, None)
             };
 
         Ok(CodeBenchmarkMetrics {
