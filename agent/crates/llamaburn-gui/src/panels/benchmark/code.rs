@@ -156,8 +156,30 @@ impl BenchmarkPanel {
         ui.separator();
         ui.add_space(5.0);
 
-        // Problem selection
-        ui.label(egui::RichText::new("Problems").strong());
+        // Problem set selection
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Problems").strong());
+            ui.add_space(10.0);
+            ui.add_enabled_ui(!disabled, |ui| {
+                let current_set_name = self.code_state.problem_sets
+                    .get(self.code_state.selected_problem_set_idx)
+                    .map(|ps| ps.name.as_str())
+                    .unwrap_or("None");
+                egui::ComboBox::from_id_salt("problem_set_select")
+                    .selected_text(current_set_name)
+                    .show_ui(ui, |ui| {
+                        for (idx, ps) in self.code_state.problem_sets.iter().enumerate() {
+                            if ui.selectable_label(
+                                self.code_state.selected_problem_set_idx == idx,
+                                &ps.name,
+                            ).clicked() {
+                                self.code_state.selected_problem_set_idx = idx;
+                                self.code_state.selected_problem_ids.clear();
+                            }
+                        }
+                    });
+            });
+        });
         ui.add_space(5.0);
 
         let problems = self.code_state.current_problems().to_vec();
@@ -197,6 +219,12 @@ impl BenchmarkPanel {
             && !self.selected_model.is_empty()
             && !self.code_state.selected_problem_ids.is_empty();
 
+        let can_run_all = !self.code_state.code_running
+            && !self.selected_model.is_empty()
+            && !self.code_state.problem_sets.is_empty();
+
+        let total_problems: usize = self.code_state.problem_sets.iter().map(|ps| ps.problems.len()).sum();
+
         ui.horizontal(|ui| {
             if self.code_state.code_running {
                 if ui.button("Cancel").clicked() {
@@ -205,16 +233,20 @@ impl BenchmarkPanel {
                 ui.spinner();
                 ui.label(&self.progress);
             } else {
-                if ui.add_enabled(can_run, egui::Button::new("Run Benchmark")).clicked() {
+                if ui.add_enabled(can_run, egui::Button::new("Run Selected")).clicked() {
                     self.start_code_benchmark();
+                }
+                if ui.add_enabled(can_run_all, egui::Button::new("Run All")).clicked() {
+                    self.start_all_code_benchmark();
                 }
                 ui.checkbox(&mut self.code_state.auto_run_tests, "Run Tests");
             }
 
             if !disabled {
                 ui.label(format!(
-                    "{} problem(s) selected",
-                    self.code_state.selected_problem_ids.len()
+                    "{} selected / {} total",
+                    self.code_state.selected_problem_ids.len(),
+                    total_problems
                 ));
             }
         });
@@ -286,6 +318,43 @@ impl BenchmarkPanel {
             return;
         }
 
+        self.run_code_benchmark_with_problems(problems);
+    }
+
+    pub fn start_all_code_benchmark(&mut self) {
+        // Collect all problems from all problem sets, sorted by difficulty
+        let mut problems: Vec<CodeProblem> = self
+            .code_state
+            .problem_sets
+            .iter()
+            .flat_map(|ps| ps.problems.clone())
+            .collect();
+
+        if problems.is_empty() {
+            self.error = Some("No problems available".to_string());
+            return;
+        }
+
+        // Sort by difficulty: Easy (0) -> Medium (1) -> Hard (2)
+        problems.sort_by_key(|p| match p.difficulty {
+            Difficulty::Easy => 0,
+            Difficulty::Medium => 1,
+            Difficulty::Hard => 2,
+        });
+
+        let easy_count = problems.iter().filter(|p| p.difficulty == Difficulty::Easy).count();
+        let medium_count = problems.iter().filter(|p| p.difficulty == Difficulty::Medium).count();
+        let hard_count = problems.iter().filter(|p| p.difficulty == Difficulty::Hard).count();
+
+        self.live_output.push_str(&format!(
+            "=== Running ALL {} problems ===\n  Easy: {}  |  Medium: {}  |  Hard: {}\n\n",
+            problems.len(), easy_count, medium_count, hard_count
+        ));
+
+        self.run_code_benchmark_with_problems(problems);
+    }
+
+    fn run_code_benchmark_with_problems(&mut self, problems: Vec<CodeProblem>) {
         let config = CodeBenchmarkConfig {
             model_id: self.selected_model.clone(),
             language: self.code_state.language,
@@ -368,11 +437,15 @@ impl BenchmarkPanel {
                     let msg = format!("\nExecuting test {}/{}...", current, total);
                     self.live_output.push_str(&msg);
                 }
-                CodeBenchmarkEvent::TestResult { passed, error } => {
+                CodeBenchmarkEvent::TestResult { passed, expected, actual, error } => {
                     let status = if passed { " ✅ PASS" } else { " ❌ FAIL" };
                     self.live_output.push_str(status);
+                    if !passed {
+                        self.live_output.push_str(&format!("\n    Expected: {}", expected));
+                        self.live_output.push_str(&format!("\n    Actual:   {}", actual));
+                    }
                     if let Some(e) = error {
-                        self.live_output.push_str(&format!("\n  Error: {}", e));
+                        self.live_output.push_str(&format!("\n    Error: {}", e));
                     }
                 }
                 CodeBenchmarkEvent::ProblemComplete { metrics } => {

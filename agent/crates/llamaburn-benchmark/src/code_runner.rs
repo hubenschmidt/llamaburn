@@ -18,7 +18,7 @@ pub enum CodeBenchmarkEvent {
     GeneratingCode,
     Token { content: String },
     ExecutingTests { current: u32, total: u32 },
-    TestResult { passed: bool, error: Option<String> },
+    TestResult { passed: bool, expected: String, actual: String, error: Option<String> },
     ProblemComplete { metrics: CodeBenchmarkMetrics },
     Done { summary: CodeBenchmarkSummary },
     Cancelled,
@@ -254,6 +254,8 @@ impl CodeBenchmarkRunner {
                     let _ = tx
                         .send(CodeBenchmarkEvent::TestResult {
                             passed: result.passed,
+                            expected: result.expected_output.clone(),
+                            actual: result.actual_output.clone(),
                             error: result.error.clone(),
                         })
                         .await;
@@ -358,6 +360,8 @@ pub async fn run_tests_only(
         let _ = tx
             .send(CodeBenchmarkEvent::TestResult {
                 passed: result.passed,
+                expected: result.expected_output.clone(),
+                actual: result.actual_output.clone(),
                 error: result.error.clone(),
             })
             .await;
