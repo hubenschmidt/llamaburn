@@ -45,6 +45,41 @@ pub struct Segment {
     pub text: String,
 }
 
+/// Create default FullParams for whisper transcription
+fn default_params(streaming: bool) -> whisper_rs::FullParams<'static, 'static> {
+    let mut params = whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
+    params.set_language(Some("en"));
+    params.set_print_progress(streaming);
+    params.set_print_realtime(streaming);
+    params.set_print_timestamps(streaming);
+    if streaming {
+        params.set_print_special(true);
+    }
+    params
+}
+
+/// Extract segments from whisper state after transcription
+fn extract_segments(state: &whisper_rs::WhisperState) -> Result<(String, Vec<Segment>), WhisperError> {
+    let num_segments = state.full_n_segments();
+    (0..num_segments)
+        .try_fold((String::new(), Vec::new()), |(mut text, mut segs), i| {
+            let Some(seg) = state.get_segment(i) else {
+                return Ok((text, segs));
+            };
+            let seg_text = seg
+                .to_str()
+                .map_err(|e| WhisperError::TranscriptionError(e.to_string()))?
+                .to_string();
+            text.push_str(&seg_text);
+            segs.push(Segment {
+                start_ms: seg.start_timestamp() * 10,
+                end_ms: seg.end_timestamp() * 10,
+                text: seg_text,
+            });
+            Ok((text, segs))
+        })
+}
+
 #[derive(Debug, Clone)]
 pub enum WhisperEvent {
     LoadingModel { model: WhisperModel },
@@ -143,65 +178,33 @@ impl WhisperService {
             .as_ref()
             .ok_or_else(|| WhisperError::ModelLoadError("No model loaded".into()))?;
 
-        // Load and convert audio to 16kHz mono
         let audio_data = self.load_audio(audio_path)?;
         debug!("Audio loaded: {} samples", audio_data.len());
 
-        // Configure whisper
-        let mut params = whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
-        params.set_language(Some("en"));
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-
-        // Run transcription
         let start = Instant::now();
         let mut state = ctx
             .create_state()
             .map_err(|e| WhisperError::TranscriptionError(e.to_string()))?;
 
         state
-            .full(params, &audio_data)
+            .full(default_params(false), &audio_data)
             .map_err(|e| WhisperError::TranscriptionError(e.to_string()))?;
 
         let elapsed = start.elapsed();
+        let (full_text, segments) = extract_segments(&state)?;
 
-        // Extract segments
-        let num_segments = state.full_n_segments();
-
-        let mut segments = Vec::new();
-        let mut full_text = String::new();
-
-        for i in 0..num_segments {
-            let Some(seg) = state.get_segment(i) else {
-                continue;
-            };
-
-            let text = seg.to_str()
-                .map_err(|e| WhisperError::TranscriptionError(e.to_string()))?
-                .to_string();
-
-            full_text.push_str(&text);
-            segments.push(Segment {
-                start_ms: seg.start_timestamp() * 10, // centiseconds to ms
-                end_ms: seg.end_timestamp() * 10,
-                text,
-            });
-        }
-
-        let result = TranscriptionResult {
-            text: full_text.trim().to_string(),
-            segments,
-            language: "en".to_string(),
-        };
-
-        Ok((result, elapsed))
+        Ok((
+            TranscriptionResult {
+                text: full_text.trim().to_string(),
+                segments,
+                language: "en".to_string(),
+            },
+            elapsed,
+        ))
     }
 
     /// Transcribe from raw 16kHz mono f32 samples (for captured microphone audio)
     pub fn transcribe_samples(&self, samples: &[f32]) -> Result<(TranscriptionResult, Duration), WhisperError> {
-        use std::time::Instant;
-
         let ctx = self
             .context
             .as_ref()
@@ -209,54 +212,26 @@ impl WhisperService {
 
         debug!("Transcribing {} samples", samples.len());
 
-        // Configure whisper
-        let mut params = whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
-        params.set_language(Some("en"));
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-
-        // Run transcription
         let start = Instant::now();
         let mut state = ctx
             .create_state()
             .map_err(|e| WhisperError::TranscriptionError(e.to_string()))?;
 
         state
-            .full(params, samples)
+            .full(default_params(false), samples)
             .map_err(|e| WhisperError::TranscriptionError(e.to_string()))?;
 
         let elapsed = start.elapsed();
+        let (full_text, segments) = extract_segments(&state)?;
 
-        // Extract segments
-        let num_segments = state.full_n_segments();
-        let mut segments = Vec::new();
-        let mut full_text = String::new();
-
-        for i in 0..num_segments {
-            let Some(seg) = state.get_segment(i) else {
-                continue;
-            };
-
-            let text = seg.to_str()
-                .map_err(|e| WhisperError::TranscriptionError(e.to_string()))?
-                .to_string();
-
-            full_text.push_str(&text);
-            segments.push(Segment {
-                start_ms: seg.start_timestamp() * 10,
-                end_ms: seg.end_timestamp() * 10,
-                text,
-            });
-        }
-
-        let result = TranscriptionResult {
-            text: full_text.trim().to_string(),
-            segments,
-            language: "en".to_string(),
-        };
-
-        Ok((result, elapsed))
+        Ok((
+            TranscriptionResult {
+                text: full_text.trim().to_string(),
+                segments,
+                language: "en".to_string(),
+            },
+            elapsed,
+        ))
     }
 
     /// Transcribe with verbose output and streaming segment callback
@@ -265,8 +240,6 @@ impl WhisperService {
         samples: &[f32],
         segment_tx: std::sync::mpsc::Sender<String>,
     ) -> Result<(TranscriptionResult, Duration), WhisperError> {
-        use std::time::Instant;
-
         let ctx = self
             .context
             .as_ref()
@@ -274,29 +247,20 @@ impl WhisperService {
 
         debug!("Transcribing {} samples (streaming)", samples.len());
 
-        // Configure whisper with verbose output
-        let mut params = whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
-        params.set_language(Some("en"));
-        params.set_print_special(true);
-        params.set_print_progress(true);
-        params.set_print_realtime(true);
-        params.set_print_timestamps(true);
-
-        // Set up segment callback for streaming output
-        let tx = segment_tx.clone();
+        let mut params = default_params(true);
         params.set_segment_callback_safe_lossy(move |segment: whisper_rs::SegmentCallbackData| {
             let text = segment.text.trim();
-            if !text.is_empty() {
-                let _ = tx.send(format!(
-                    "[{:.2}s → {:.2}s] {}",
-                    segment.start_timestamp as f64 / 100.0,
-                    segment.end_timestamp as f64 / 100.0,
-                    text
-                ));
+            if text.is_empty() {
+                return;
             }
+            let _ = segment_tx.send(format!(
+                "[{:.2}s → {:.2}s] {}",
+                segment.start_timestamp as f64 / 100.0,
+                segment.end_timestamp as f64 / 100.0,
+                text
+            ));
         });
 
-        // Run transcription
         let start = Instant::now();
         let mut state = ctx
             .create_state()
@@ -307,36 +271,16 @@ impl WhisperService {
             .map_err(|e| WhisperError::TranscriptionError(e.to_string()))?;
 
         let elapsed = start.elapsed();
+        let (full_text, segments) = extract_segments(&state)?;
 
-        // Extract final segments
-        let num_segments = state.full_n_segments();
-        let mut segments = Vec::new();
-        let mut full_text = String::new();
-
-        for i in 0..num_segments {
-            let Some(seg) = state.get_segment(i) else {
-                continue;
-            };
-
-            let text = seg.to_str()
-                .map_err(|e| WhisperError::TranscriptionError(e.to_string()))?
-                .to_string();
-
-            full_text.push_str(&text);
-            segments.push(Segment {
-                start_ms: seg.start_timestamp() * 10,
-                end_ms: seg.end_timestamp() * 10,
-                text,
-            });
-        }
-
-        let result = TranscriptionResult {
-            text: full_text.trim().to_string(),
-            segments,
-            language: "en".to_string(),
-        };
-
-        Ok((result, elapsed))
+        Ok((
+            TranscriptionResult {
+                text: full_text.trim().to_string(),
+                segments,
+                language: "en".to_string(),
+            },
+            elapsed,
+        ))
     }
 
     fn load_audio(&self, path: &Path) -> Result<Vec<f32>, WhisperError> {

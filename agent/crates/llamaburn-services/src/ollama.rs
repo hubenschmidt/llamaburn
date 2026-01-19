@@ -1,4 +1,5 @@
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -77,12 +78,12 @@ struct GenerateResponse {
 }
 
 pub struct OllamaClient {
-    host: String,
+    host: Arc<str>,
 }
 
 impl OllamaClient {
-    pub fn new(host: impl Into<String>) -> Self {
-        Self { host: host.into() }
+    pub fn new(host: impl AsRef<str>) -> Self {
+        Self { host: Arc::from(host.as_ref()) }
     }
 
     pub fn default_host() -> Self {
