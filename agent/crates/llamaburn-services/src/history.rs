@@ -53,6 +53,40 @@ pub struct AudioHistoryEntry {
     pub metrics: Vec<AudioBenchmarkMetrics>,
 }
 
+/// Status of an individual benchmark run
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RunStatus {
+    #[default]
+    Success,
+    Error,
+    Skipped,
+    Paused,
+    Cancelled,
+}
+
+impl RunStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RunStatus::Success => "success",
+            RunStatus::Error => "error",
+            RunStatus::Skipped => "skipped",
+            RunStatus::Paused => "paused",
+            RunStatus::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "error" => RunStatus::Error,
+            "skipped" => RunStatus::Skipped,
+            "paused" => RunStatus::Paused,
+            "cancelled" => RunStatus::Cancelled,
+            _ => RunStatus::Success,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodeHistoryEntry {
     pub id: String,
@@ -65,6 +99,8 @@ pub struct CodeHistoryEntry {
     pub metrics: Vec<CodeBenchmarkMetrics>,
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub status: RunStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -527,8 +563,8 @@ impl HistoryService {
         let metrics_json = serde_json::to_string(&entry.metrics)?;
 
         conn.execute(
-            "INSERT INTO benchmark_history (id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json, session_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO benchmark_history (id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json, session_id, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 entry.id,
                 entry.timestamp,
@@ -539,6 +575,7 @@ impl HistoryService {
                 summary_json,
                 metrics_json,
                 entry.session_id,
+                entry.status.as_str(),
             ],
         )?;
 
@@ -672,7 +709,7 @@ impl HistoryService {
         let type_str = serde_json::to_string(&BenchmarkType::Code)?;
 
         let mut sql = String::from(
-            "SELECT id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json, session_id
+            "SELECT id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json, session_id, status
              FROM benchmark_history WHERE benchmark_type = ?",
         );
 
@@ -694,12 +731,13 @@ impl HistoryService {
                 row.get::<_, String>(6)?,
                 row.get::<_, String>(7)?,
                 row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
             ))
         })?;
 
         let mut entries = Vec::new();
         for row in rows {
-            let (id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json, session_id) = row?;
+            let (id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json, session_id, status) = row?;
             let Ok(language) = language.map(|s| serde_json::from_str(&s)).transpose() else {
                 continue;
             };
@@ -722,6 +760,7 @@ impl HistoryService {
                 summary,
                 metrics,
                 session_id,
+                status: status.map(|s| RunStatus::from_str(&s)).unwrap_or_default(),
             });
         }
 

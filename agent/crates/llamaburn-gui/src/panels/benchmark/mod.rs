@@ -740,6 +740,7 @@ impl BenchmarkPanel {
             ui.add_space(10.0);
             if ui.small_button("Clear").clicked() {
                 self.live_output.clear();
+                self.progress.clear();
             }
             if ui.small_button("Export").clicked() && !self.live_output.is_empty() {
                 self.export_live_output();
@@ -766,16 +767,30 @@ impl BenchmarkPanel {
                         .font(egui::TextStyle::Monospace)
                         .desired_width(text_width)
                         .layouter(&mut |ui, string, wrap_width| {
-                            let mut layout_job = egui::text::LayoutJob::simple(
-                                string.to_owned(),
-                                egui::FontId::monospace(12.0),
-                                ui.visuals().text_color(),
-                                wrap_width,
-                            );
+                            let mut layout_job = egui::text::LayoutJob::default();
                             layout_job.wrap = egui::text::TextWrapping {
                                 max_width: wrap_width,
                                 ..Default::default()
                             };
+
+                            let normal_color = ui.visuals().text_color();
+                            let error_color = egui::Color32::from_rgb(255, 100, 100);
+                            let font = egui::FontId::monospace(12.0);
+
+                            for line in string.split_inclusive('\n') {
+                                let is_error = line.contains("Error:")
+                                    || line.starts_with("error")
+                                    || line.contains("TypeError")
+                                    || line.contains("SyntaxError")
+                                    || line.contains("panic!");
+                                let color = if is_error { error_color } else { normal_color };
+                                layout_job.append(line, 0.0, egui::text::TextFormat {
+                                    font_id: font.clone(),
+                                    color,
+                                    ..Default::default()
+                                });
+                            }
+
                             ui.fonts(|f| f.layout_job(layout_job))
                         }),
                 );

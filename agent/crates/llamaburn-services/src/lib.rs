@@ -15,7 +15,7 @@ pub use audio_output::{AudioOutputError, AudioOutputService, MonitorHandle, Play
 pub use benchmark::BenchmarkService;
 pub use effect_detection::{EffectDetectionError, EffectDetectionService, get_llm_blind_analysis, build_llm_analysis_prompt};
 pub use gpu_monitor::{GpuMetrics, GpuMonitor, GpuMonitorError};
-pub use history::{AudioHistoryEntry, BatchCombo, BatchState, BatchStatus, BenchmarkHistoryEntry, CodeHistoryEntry, EffectDetectionHistoryEntry, HistoryError, HistoryFilter, HistoryService};
+pub use history::{AudioHistoryEntry, BatchCombo, BatchState, BatchStatus, BenchmarkHistoryEntry, CodeHistoryEntry, EffectDetectionHistoryEntry, HistoryError, HistoryFilter, HistoryService, RunStatus};
 pub use model_info::{ModelInfo, ModelInfoService};
 pub use ollama::{OllamaClient, OllamaError, OllamaModelDetails, OllamaShowResponse};
 pub use settings::{keys as settings_keys, SettingsError, SettingsService};

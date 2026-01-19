@@ -142,6 +142,14 @@ impl HistoryEntry {
         let tokens = e.config.max_tokens.map(|t| t.to_string()).unwrap_or("—".to_string());
         format!("{} T={:.1} {}tok", e.language.label(), e.config.temperature, tokens)
     }
+
+    /// Run status (Success, Error, Paused, Cancelled)
+    pub fn status(&self) -> &'static str {
+        let HistoryEntry::Code(e) = self else {
+            return "—";
+        };
+        e.status.as_str()
+    }
 }
 
 pub struct HistoryPanel {
@@ -372,7 +380,7 @@ impl HistoryPanel {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 egui::Grid::new("history_table")
-                    .num_columns(16)
+                    .num_columns(17)
                     .spacing([10.0, 6.0])
                     .striped(true)
                     .show(ui, |ui| {
@@ -389,6 +397,7 @@ impl HistoryPanel {
                         ui.label(egui::RichText::new("Exec").strong());
                         ui.label(egui::RichText::new("Detail").strong());
                         ui.label(egui::RichText::new("Session").strong());
+                        ui.label(egui::RichText::new("Status").strong());
                         ui.label(egui::RichText::new("Date").strong());
                         ui.label(egui::RichText::new("").strong()); // Load
                         ui.label(egui::RichText::new("").strong()); // Delete
@@ -448,6 +457,15 @@ impl HistoryPanel {
                             ui.label(exec);
                             ui.label(detail);
                             ui.label(entry.session_display());
+                            let status = entry.status();
+                            let status_color = match status {
+                                "error" => egui::Color32::from_rgb(255, 100, 100),
+                                "skipped" => egui::Color32::from_rgb(255, 180, 100),
+                                "paused" => egui::Color32::YELLOW,
+                                "cancelled" => egui::Color32::GRAY,
+                                _ => ui.visuals().text_color(),
+                            };
+                            ui.label(egui::RichText::new(status).color(status_color));
                             ui.label(format_timestamp(entry.timestamp()));
 
                             // Load button (only for Code entries)
@@ -611,7 +629,7 @@ impl HistoryPanel {
                 .save_file();
             let Some(path) = path else { return };
 
-            let mut csv = String::from("Timestamp,Model,Type,Params,TPS,Test Pass,TTFT,RTF,Runs,ExecTime,Detail,Session\n");
+            let mut csv = String::from("Timestamp,Model,Type,Params,TPS,Test Pass,TTFT,RTF,Runs,ExecTime,Detail,Session,Status\n");
             for entry in &entries {
                 let (tps, pass, ttft, rtf, runs, exec, detail) = match &entry {
                     HistoryEntry::Text(e) => (
@@ -646,13 +664,14 @@ impl HistoryPanel {
                     ),
                 };
                 let row = format!(
-                    "{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                    "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                     entry.timestamp(),
                     entry.model_id(),
                     format!("{:?}", entry.benchmark_type()),
                     entry.code_params().replace(',', ";"),
                     tps, pass, ttft, rtf, runs, exec, detail,
                     entry.session_display(),
+                    entry.status(),
                 );
                 csv.push_str(&row);
             }

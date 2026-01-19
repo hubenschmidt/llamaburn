@@ -11,7 +11,7 @@ use llamaburn_core::{
     BenchmarkType, CodeBenchmarkConfig, CodeBenchmarkMetrics, CodeBenchmarkSummary, CodeProblem,
     Difficulty, Language, ProblemSet,
 };
-use llamaburn_services::{BatchCombo, BatchState, BatchStatus, CodeHistoryEntry};
+use llamaburn_services::{BatchCombo, BatchState, BatchStatus, CodeHistoryEntry, RunStatus};
 
 use super::BenchmarkPanel;
 
@@ -70,6 +70,10 @@ pub struct CodeBenchmarkState {
     pub queue_total: usize,
     pub queue_completed: usize,
     pub batch_session_id: Option<String>,
+
+    // Timing for ETA calculation
+    pub combo_start_time: Option<std::time::Instant>,
+    pub combo_durations_ms: Vec<u64>,
 }
 
 impl CodeBenchmarkState {
@@ -107,6 +111,9 @@ impl CodeBenchmarkState {
             queue_total: 0,
             queue_completed: 0,
             batch_session_id: None,
+
+            combo_start_time: None,
+            combo_durations_ms: Vec::new(),
         }
     }
 
@@ -250,6 +257,22 @@ impl CodeBenchmarkState {
     }
 }
 
+/// Format duration in milliseconds as human-readable ETA
+fn format_duration_eta(ms: u64) -> String {
+    let total_secs = ms / 1000;
+    let hours = total_secs / 3600;
+    let mins = (total_secs % 3600) / 60;
+    let secs = total_secs % 60;
+
+    if hours > 0 {
+        return format!("ETA: {}h {}m", hours, mins);
+    }
+    if mins > 0 {
+        return format!("ETA: {}m {}s", mins, secs);
+    }
+    format!("ETA: {}s", secs)
+}
+
 impl BenchmarkPanel {
     /// Render banner for incomplete/paused batch sessions
     fn render_incomplete_sessions_banner(&mut self, ui: &mut egui::Ui, interactive: bool) {
@@ -382,18 +405,28 @@ impl BenchmarkPanel {
             let cancel_clicked = ui.button("Cancel").clicked();
             ui.spinner();
 
-            let progress_label = self.code_state.current_combo.as_ref()
+            // Progress counter
+            let current = self.code_state.queue_completed + 1;
+            let total = self.code_state.queue_total;
+            ui.label(format!("{}/{}", current, total));
+
+            // ETA calculation (after first combo completes)
+            let eta_label = self.calculate_eta_label();
+            if !eta_label.is_empty() {
+                ui.label(eta_label);
+            }
+
+            // Current combo details
+            let combo_label = self.code_state.current_combo.as_ref()
                 .map(|combo| format!(
-                    "{}/{}: {} | {} | T={:.1} | {}tok",
-                    self.code_state.queue_completed + 1,
-                    self.code_state.queue_total,
+                    "{} | {} | T={:.1} | {}tok",
                     combo.model,
                     combo.language.label(),
                     combo.temperature,
                     combo.max_tokens
                 ))
                 .unwrap_or_else(|| self.progress.clone());
-            ui.label(progress_label);
+            ui.label(combo_label);
 
             if cancel_clicked {
                 self.cancel_matrix_benchmark();
@@ -402,9 +435,24 @@ impl BenchmarkPanel {
         pause_clicked
     }
 
+    /// Calculate ETA label based on average combo duration
+    fn calculate_eta_label(&self) -> String {
+        let durations = &self.code_state.combo_durations_ms;
+        if durations.is_empty() {
+            return String::new();
+        }
+
+        let avg_ms: u64 = durations.iter().sum::<u64>() / durations.len() as u64;
+        let remaining = self.code_state.queue_total.saturating_sub(self.code_state.queue_completed + 1);
+        let eta_ms = avg_ms * remaining as u64;
+
+        format_duration_eta(eta_ms)
+    }
+
     pub fn render_code_config(&mut self, ui: &mut egui::Ui) {
         let disabled = self.code_state.code_running || self.loading_models;
-        let queue_running = !self.code_state.combo_queue.is_empty();
+        let queue_running = !self.code_state.combo_queue.is_empty()
+            || self.code_state.current_combo.is_some();
         let interactive = !disabled && !queue_running;
 
         // Show incomplete sessions banner if any exist
@@ -666,7 +714,10 @@ impl BenchmarkPanel {
                 self.code_state.selected_max_tokens.len()
             );
 
-            if ui.add_enabled(has_selections, egui::Button::new(button_label)).clicked() {
+            let green = egui::Color32::from_rgb(34, 139, 34);
+            let button = egui::Button::new(egui::RichText::new(button_label).color(egui::Color32::WHITE))
+                .fill(green);
+            if ui.add_enabled(has_selections, button).clicked() {
                 self.start_matrix_benchmark();
             }
             ui.checkbox(&mut self.code_state.auto_run_tests, "Run Tests");
@@ -788,6 +839,7 @@ impl BenchmarkPanel {
         self.code_state.queue_total = self.code_state.combo_queue.len();
         self.code_state.queue_completed = 0;
         self.code_state.batch_session_id = Some(uuid::Uuid::new_v4().to_string());
+        self.code_state.combo_durations_ms.clear();
 
         // Save initial batch state for resume capability
         let batch = self.code_state.to_batch_state();
@@ -870,6 +922,9 @@ impl BenchmarkPanel {
             self.error = Some("No problems selected".to_string());
             return;
         }
+
+        // Record start time for ETA calculation
+        self.code_state.combo_start_time = Some(std::time::Instant::now());
 
         self.run_code_benchmark_with_combo(combo, problems);
     }
@@ -986,6 +1041,11 @@ impl BenchmarkPanel {
                     ));
                     should_clear = true;
 
+                    // Record combo duration for ETA calculation
+                    if let Some(start) = self.code_state.combo_start_time.take() {
+                        self.code_state.combo_durations_ms.push(start.elapsed().as_millis() as u64);
+                    }
+
                     // Advance to next combo in queue
                     let has_more = !self.code_state.combo_queue.is_empty();
                     if !has_more { continue; }
@@ -1014,17 +1074,22 @@ impl BenchmarkPanel {
                     // Handle based on skip_on_error setting
                     let has_queue = !self.code_state.combo_queue.is_empty();
                     if !has_queue {
+                        self.save_failed_to_history(&message, RunStatus::Error);
                         self.error = Some(message.clone());
                         continue;
                     }
 
                     // skip_on_error: skip this combo and continue
                     if self.code_state.skip_on_error {
+                        self.save_failed_to_history(&message, RunStatus::Skipped);
                         self.live_output.push_str("(Skipping to next combo...)\n");
                         self.code_state.queue_completed += 1;
                         self.advance_to_next_combo();
                         continue;
                     }
+
+                    // Auto-pause: save as Error status
+                    self.save_failed_to_history(&message, RunStatus::Error);
 
                     // Auto-pause: save state and stop for user to resume
                     self.live_output.push_str("(Auto-paused - use Resume to continue)\n");
@@ -1087,11 +1152,67 @@ impl BenchmarkPanel {
             summary: summary.clone(),
             metrics: self.code_state.code_metrics.clone(),
             session_id: self.code_state.batch_session_id.clone(),
+            status: RunStatus::Success,
         };
 
         match self.history_service.insert_code(&entry) {
             Ok(()) => info!("Saved code benchmark result to history: {}", entry.id),
             Err(e) => warn!("Failed to save code benchmark history: {}", e),
+        }
+    }
+
+    /// Save a failed entry to history with given status (Error or Skipped)
+    fn save_failed_to_history(&self, error_message: &str, status: RunStatus) {
+        let Some(combo) = &self.code_state.current_combo else {
+            return;
+        };
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let config = CodeBenchmarkConfig {
+            model_id: combo.model.clone(),
+            language: combo.language,
+            problem_ids: self.code_state.selected_problem_ids.clone(),
+            temperature: combo.temperature,
+            max_tokens: Some(combo.max_tokens),
+            warmup_runs: self.warmup,
+            run_tests: self.code_state.auto_run_tests,
+        };
+
+        // Create empty summary for failed entry
+        let summary = CodeBenchmarkSummary {
+            pass_rate: 0.0,
+            problems_solved: 0,
+            problems_total: 0,
+            avg_tps: 0.0,
+            avg_execution_time_ms: 0.0,
+            easy_solved: 0,
+            easy_total: 0,
+            medium_solved: 0,
+            medium_total: 0,
+            hard_solved: 0,
+            hard_total: 0,
+        };
+
+        let entry = CodeHistoryEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            timestamp,
+            benchmark_type: BenchmarkType::Code,
+            model_id: combo.model.clone(),
+            language: combo.language,
+            config,
+            summary,
+            metrics: vec![],
+            session_id: self.code_state.batch_session_id.clone(),
+            status,
+        };
+
+        match self.history_service.insert_code(&entry) {
+            Ok(()) => info!("Saved {} entry to history: {} - {}", status.as_str(), entry.id, error_message),
+            Err(e) => warn!("Failed to save {} history: {}", status.as_str(), e),
         }
     }
 

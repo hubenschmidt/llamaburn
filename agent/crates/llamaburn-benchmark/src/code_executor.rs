@@ -131,23 +131,71 @@ impl CodeExecutor {
         test_case: &TestCase,
         timeout_ms: u32,
     ) -> Result<TestResult> {
-        let _func_name = extract_function_name(code, Language::Rust);
+        let func_name = extract_function_name(code, Language::Rust);
         let source_path = self.temp_dir.path().join("solution.rs");
         let binary_path = self.temp_dir.path().join("solution");
+        let escaped_input = test_case.input.replace('\\', "\\\\").replace('"', "\\\"");
 
-        // Build the main wrapper - simplified version that just calls the function
         let full_code = format!(
             r##"#![allow(unused)]
+use std::collections::HashMap;
+
 {code}
 
 fn main() {{
-    // Test input: {input}
-    // This is a simplified runner - real impl would parse JSON args
-    println!("{{:?}}", "test");
+    // Parse input: {escaped_input}
+    let args = parse_json_array("{escaped_input}");
+    let result = {func_name}(
+        parse_int_vec(&args[0]),
+        parse_int(&args[1]),
+    );
+    print_result(&result);
+}}
+
+fn parse_json_array(s: &str) -> Vec<String> {{
+    let s = s.trim();
+    let inner = &s[1..s.len()-1]; // Remove outer []
+    let mut result = Vec::new();
+    let mut depth = 0;
+    let mut current = String::new();
+    for c in inner.chars() {{
+        match c {{
+            '[' => {{ depth += 1; current.push(c); }}
+            ']' => {{ depth -= 1; current.push(c); }}
+            ',' if depth == 0 => {{
+                result.push(current.trim().to_string());
+                current = String::new();
+            }}
+            _ => current.push(c),
+        }}
+    }}
+    if !current.trim().is_empty() {{
+        result.push(current.trim().to_string());
+    }}
+    result
+}}
+
+fn parse_int_vec(s: &str) -> Vec<i32> {{
+    let s = s.trim();
+    if s == "[]" {{ return vec![]; }}
+    let inner = &s[1..s.len()-1];
+    inner.split(',').filter_map(|x| x.trim().parse().ok()).collect()
+}}
+
+fn parse_int(s: &str) -> i32 {{
+    s.trim().parse().unwrap_or(0)
+}}
+
+fn print_result<T: std::fmt::Debug>(result: &T) {{
+    let s = format!("{{:?}}", result);
+    // Convert Rust debug format to JSON-like format
+    let s = s.replace(" ", "");
+    println!("{{}}", s);
 }}
 "##,
             code = code,
-            input = test_case.input,
+            escaped_input = escaped_input,
+            func_name = func_name,
         );
 
         fs::write(&source_path, &full_code).await?;
@@ -190,25 +238,79 @@ fn main() {{
         let source_path = self.temp_dir.path().join("main.go");
         let escaped_input = test_case.input.replace('`', "'");
 
+        // Strip package declaration and imports from LLM code (we provide our own)
+        let (user_imports, clean_code) = extract_go_imports(code);
+
         let full_code = format!(
             r#"package main
 
 import (
     "encoding/json"
     "fmt"
+    "reflect"
+{user_imports}
 )
 
-{code}
+{clean_code}
 
 func main() {{
     var args []interface{{}}
     json.Unmarshal([]byte("{escaped_input}"), &args)
-    result := {func_name}()
-    output, _ := json.Marshal(result)
-    fmt.Println(string(output))
+
+    // Use reflection to call function with dynamic args
+    fn := reflect.ValueOf({func_name})
+    fnType := fn.Type()
+    callArgs := make([]reflect.Value, len(args))
+
+    for i, arg := range args {{
+        callArgs[i] = convertArg(arg, fnType.In(i))
+    }}
+
+    results := fn.Call(callArgs)
+    if len(results) > 0 {{
+        output, _ := json.Marshal(results[0].Interface())
+        fmt.Println(string(output))
+    }}
+}}
+
+func convertArg(arg interface{{}}, targetType reflect.Type) reflect.Value {{
+    switch targetType.Kind() {{
+    case reflect.Slice:
+        // Handle string -> []byte conversion
+        if s, ok := arg.(string); ok && targetType.Elem().Kind() == reflect.Uint8 {{
+            return reflect.ValueOf([]byte(s))
+        }}
+        arr, ok := arg.([]interface{{}})
+        if !ok {{
+            return reflect.Zero(targetType)
+        }}
+        slice := reflect.MakeSlice(targetType, len(arr), len(arr))
+        for i, v := range arr {{
+            slice.Index(i).Set(convertArg(v, targetType.Elem()))
+        }}
+        return slice
+    case reflect.Int, reflect.Int32, reflect.Int64:
+        if f, ok := arg.(float64); ok {{
+            return reflect.ValueOf(int(f)).Convert(targetType)
+        }}
+    case reflect.Float32, reflect.Float64:
+        if f, ok := arg.(float64); ok {{
+            return reflect.ValueOf(f).Convert(targetType)
+        }}
+    case reflect.String:
+        if s, ok := arg.(string); ok {{
+            return reflect.ValueOf(s)
+        }}
+    case reflect.Bool:
+        if b, ok := arg.(bool); ok {{
+            return reflect.ValueOf(b)
+        }}
+    }}
+    return reflect.ValueOf(arg)
 }}
 "#,
-            code = code,
+            user_imports = user_imports,
+            clean_code = clean_code,
             escaped_input = escaped_input.replace('"', "\\\""),
             func_name = func_name,
         );
@@ -299,10 +401,17 @@ fn extract_function_name(code: &str, language: Language) -> String {
         Language::Go => r"func\s+(\w+)\s*\(",
     };
 
+    // Common helper function names to skip
+    let helpers = ["min", "max", "abs", "main", "helper", "swap", "gcd", "lcm"];
+
     let re = regex::Regex::new(pattern).expect("invalid function name regex");
-    re.captures(code)
-        .and_then(|c| c.get(1).or_else(|| c.get(2)))
+    let names: Vec<String> = re.captures_iter(code)
+        .filter_map(|c| c.get(1).or_else(|| c.get(2)))
         .map(|m| m.as_str().to_string())
+        .collect();
+
+    names.into_iter()
+        .find(|name| !helpers.contains(&name.as_str()))
         .unwrap_or_else(|| "solution".to_string())
 }
 
@@ -316,4 +425,65 @@ fn normalize_output(s: &str) -> String {
     }
 
     trimmed
+}
+
+/// Extract imports from Go code and return (additional_imports, clean_code)
+/// Strips `package main`, import statements, and `func main()` blocks
+fn extract_go_imports(code: &str) -> (String, String) {
+    #[derive(PartialEq)]
+    enum State { Normal, InImportBlock, InMainFunc(usize) }
+
+    let mut state = State::Normal;
+    let mut imports = Vec::new();
+    let mut clean_lines = Vec::new();
+
+    for line in code.lines() {
+        let trimmed = line.trim();
+        let open = trimmed.matches('{').count();
+        let close = trimmed.matches('}').count();
+
+        state = match (&state, trimmed) {
+            (State::InMainFunc(depth), _) => {
+                let new_depth = depth + open - close;
+                if new_depth == 0 { State::Normal } else { State::InMainFunc(new_depth) }
+            }
+            (_, t) if t.starts_with("func main(") => {
+                let depth = open.saturating_sub(close);
+                if depth == 0 && open > 0 { State::Normal } else { State::InMainFunc(depth.max(1)) }
+            }
+            (_, t) if t.starts_with("package ") => State::Normal,
+            (_, t) if t.starts_with("import (") => State::InImportBlock,
+            (State::InImportBlock, ")") => State::Normal,
+            (State::InImportBlock, t) if !t.is_empty() => {
+                imports.push(t.trim_matches('"').to_string());
+                State::InImportBlock
+            }
+            (State::InImportBlock, _) => State::InImportBlock,
+            (_, t) if t.starts_with("import \"") => {
+                imports.push(t.trim_start_matches("import ").trim_matches('"').to_string());
+                State::Normal
+            }
+            _ => {
+                clean_lines.push(line);
+                State::Normal
+            }
+        };
+    }
+
+    let clean_code = clean_lines.join("\n");
+
+    // Filter out imports we already provide and unused imports
+    let builtin = ["encoding/json", "fmt", "reflect"];
+    let user_imports: Vec<String> = imports
+        .into_iter()
+        .filter(|i| !builtin.contains(&i.as_str()))
+        .filter(|i| {
+            // Only include import if package name appears in code
+            let pkg_name = i.rsplit('/').next().unwrap_or(i);
+            clean_code.contains(&format!("{}.", pkg_name))
+        })
+        .map(|i| format!("    \"{}\"", i))
+        .collect();
+
+    (user_imports.join("\n"), clean_code)
 }
