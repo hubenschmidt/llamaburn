@@ -1,6 +1,7 @@
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use crate::ollama::StructuredCodeResponse;
 use llamaburn_core::{Language, TestCase};
 use tempfile::TempDir;
 use thiserror::Error;
@@ -58,6 +59,442 @@ impl CodeExecutor {
         }
 
         Ok(results)
+    }
+
+    /// Run tests using structured output - no parsing needed
+    pub async fn run_tests_structured(
+        &self,
+        structured: &StructuredCodeResponse,
+        language: Language,
+        test_cases: &[TestCase],
+        timeout_ms: u32,
+    ) -> Result<Vec<TestResult>> {
+        let mut results = Vec::with_capacity(test_cases.len());
+
+        for test_case in test_cases {
+            let result = self
+                .run_single_test_structured(structured, language, test_case, timeout_ms)
+                .await?;
+            results.push(result);
+        }
+
+        Ok(results)
+    }
+
+    /// Run a single test using structured output
+    async fn run_single_test_structured(
+        &self,
+        structured: &StructuredCodeResponse,
+        language: Language,
+        test_case: &TestCase,
+        timeout_ms: u32,
+    ) -> Result<TestResult> {
+        match language {
+            Language::Python => self.run_python_structured(structured, test_case, timeout_ms).await,
+            Language::JavaScript => self.run_js_structured(structured, test_case, timeout_ms).await,
+            Language::Go => self.run_go_structured(structured, test_case, timeout_ms).await,
+            Language::Rust => self.run_rust_structured(structured, test_case, timeout_ms).await,
+        }
+    }
+
+    async fn run_python_structured(
+        &self,
+        structured: &StructuredCodeResponse,
+        test_case: &TestCase,
+        timeout_ms: u32,
+    ) -> Result<TestResult> {
+        let escaped_input = test_case.input.replace('\\', "\\\\").replace('\'', "\\'");
+
+        // Build imports from structured output
+        let imports = structured.imports.iter()
+            .map(|i| format!("import {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let test_code = format!(
+            "{imports}\nimport json\nimport sys\n\n{code}\n\nargs = json.loads('{escaped_input}')\nresult = {func_name}(*args)\nprint(json.dumps(result))",
+            imports = imports,
+            code = structured.code,
+            escaped_input = escaped_input,
+            func_name = structured.function_name
+        );
+
+        let start = Instant::now();
+        let output = self.execute_command("python3", &["-c", &test_code], timeout_ms).await;
+        let execution_time_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+        Self::build_test_result(output, test_case, execution_time_ms)
+    }
+
+    async fn run_js_structured(
+        &self,
+        structured: &StructuredCodeResponse,
+        test_case: &TestCase,
+        timeout_ms: u32,
+    ) -> Result<TestResult> {
+        let escaped_input = test_case.input.replace('\\', "\\\\").replace('\'', "\\'");
+
+        let test_code = format!(
+            "{code}\n\nconst args = JSON.parse('{escaped_input}');\nconst result = {func_name}(...args);\nconsole.log(JSON.stringify(result));",
+            code = structured.code,
+            escaped_input = escaped_input,
+            func_name = structured.function_name
+        );
+
+        let start = Instant::now();
+        let output = self.execute_command("node", &["-e", &test_code], timeout_ms).await;
+        let execution_time_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+        Self::build_test_result(output, test_case, execution_time_ms)
+    }
+
+    async fn run_go_structured(
+        &self,
+        structured: &StructuredCodeResponse,
+        test_case: &TestCase,
+        timeout_ms: u32,
+    ) -> Result<TestResult> {
+        let source_path = self.temp_dir.path().join("main.go");
+        let escaped_input = test_case.input.replace('`', "'").replace('"', "\\\"");
+
+        // Build imports from structured output (filter out builtins and unused)
+        let builtin = ["encoding/json", "fmt", "reflect"];
+        let user_imports = structured.imports.iter()
+            .filter(|i| !builtin.contains(&i.as_str()))
+            .filter(|i| {
+                // Only include if package name appears in code
+                let pkg_name = i.rsplit('/').next().unwrap_or(i);
+                structured.code.contains(&format!("{}.", pkg_name))
+            })
+            .map(|i| format!("    \"{}\"", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let full_code = format!(
+            r#"package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "reflect"
+{user_imports}
+)
+
+{code}
+
+func main() {{
+    var args []interface{{}}
+    json.Unmarshal([]byte("{escaped_input}"), &args)
+
+    fn := reflect.ValueOf({func_name})
+    fnType := fn.Type()
+    callArgs := make([]reflect.Value, len(args))
+
+    for i, arg := range args {{
+        callArgs[i] = convertArg(arg, fnType.In(i))
+    }}
+
+    results := fn.Call(callArgs)
+    if len(results) > 0 {{
+        result := results[0].Interface()
+        // Handle []byte specially - output as string, not base64
+        if b, ok := result.([]byte); ok {{
+            fmt.Printf("%q\n", string(b))
+        }} else {{
+            output, _ := json.Marshal(result)
+            fmt.Println(string(output))
+        }}
+    }}
+}}
+
+func convertArg(arg interface{{}}, targetType reflect.Type) reflect.Value {{
+    switch targetType.Kind() {{
+    case reflect.Slice:
+        if s, ok := arg.(string); ok && targetType.Elem().Kind() == reflect.Uint8 {{
+            return reflect.ValueOf([]byte(s))
+        }}
+        arr, ok := arg.([]interface{{}})
+        if !ok {{
+            return reflect.Zero(targetType)
+        }}
+        slice := reflect.MakeSlice(targetType, len(arr), len(arr))
+        for i, v := range arr {{
+            slice.Index(i).Set(convertArg(v, targetType.Elem()))
+        }}
+        return slice
+    case reflect.Int, reflect.Int32, reflect.Int64:
+        if f, ok := arg.(float64); ok {{
+            return reflect.ValueOf(int(f)).Convert(targetType)
+        }}
+    case reflect.Float32, reflect.Float64:
+        if f, ok := arg.(float64); ok {{
+            return reflect.ValueOf(f).Convert(targetType)
+        }}
+    case reflect.String:
+        if s, ok := arg.(string); ok {{
+            return reflect.ValueOf(s)
+        }}
+    case reflect.Bool:
+        if b, ok := arg.(bool); ok {{
+            return reflect.ValueOf(b)
+        }}
+    }}
+    return reflect.ValueOf(arg)
+}}
+"#,
+            user_imports = user_imports,
+            code = structured.code,
+            escaped_input = escaped_input,
+            func_name = structured.function_name,
+        );
+
+        fs::write(&source_path, &full_code).await?;
+
+        let start = Instant::now();
+        let source_str = source_path.to_str().expect("temp path not UTF-8");
+        let output = self.execute_command("go", &["run", source_str], timeout_ms).await;
+        let execution_time_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+        Self::build_test_result(output, test_case, execution_time_ms)
+    }
+
+    async fn run_rust_structured(
+        &self,
+        structured: &StructuredCodeResponse,
+        test_case: &TestCase,
+        timeout_ms: u32,
+    ) -> Result<TestResult> {
+        let source_path = self.temp_dir.path().join("solution.rs");
+        let binary_path = self.temp_dir.path().join("solution");
+        let escaped_input = test_case.input.replace('\\', "\\\\").replace('"', "\\\"");
+
+        // Count arguments in input JSON array to generate dynamic call
+        let arg_count = count_json_args(&test_case.input);
+
+        // Generate argument declarations (mutable to support &mut refs)
+        let arg_decls = (0..arg_count)
+            .map(|i| format!("    let mut _arg{} = parse_arg(&args[{}]);", i, i))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Generate argument references for function call (use as_mut_arg for all)
+        let arg_refs = (0..arg_count)
+            .map(|i| format!("        _arg{}.as_mut_arg()", i))
+            .collect::<Vec<_>>()
+            .join(",\n");
+
+        let full_code = format!(
+            r##"#![allow(unused)]
+use std::collections::{{HashMap, HashSet, BTreeMap, BTreeSet, VecDeque}};
+
+{code}
+
+fn main() {{
+    let args = parse_json_array("{escaped_input}");
+{arg_decls}
+    let result = {func_name}(
+{arg_refs}
+    );
+    print_result(&result);
+}}
+
+fn parse_json_array(s: &str) -> Vec<String> {{
+    let s = s.trim();
+    if s.len() < 2 {{ return vec![s.to_string()]; }}
+    let inner = &s[1..s.len()-1];
+    let mut result = Vec::new();
+    let mut depth = 0;
+    let mut current = String::new();
+    let mut in_string = false;
+    let mut prev_char = ' ';
+    for c in inner.chars() {{
+        if c == '"' && prev_char != '\\' {{ in_string = !in_string; }}
+        if !in_string {{
+            match c {{
+                '[' | '{{' => {{ depth += 1; current.push(c); }}
+                ']' | '}}' => {{ depth -= 1; current.push(c); }}
+                ',' if depth == 0 => {{
+                    result.push(current.trim().to_string());
+                    current = String::new();
+                    prev_char = c;
+                    continue;
+                }}
+                _ => current.push(c),
+            }}
+        }} else {{
+            current.push(c);
+        }}
+        prev_char = c;
+    }}
+    if !current.trim().is_empty() {{
+        result.push(current.trim().to_string());
+    }}
+    result
+}}
+
+// Wrapper that stores parsed value and provides conversions
+struct Arg {{
+    raw: String,
+    parsed_str: String,
+    parsed_chars: Vec<char>,
+}}
+
+fn parse_arg(s: &str) -> Arg {{
+    let raw = s.to_string();
+    let s = s.trim();
+    // Pre-parse string value (strip quotes)
+    let parsed_str = if s.starts_with('"') && s.ends_with('"') {{
+        s[1..s.len()-1].to_string()
+    }} else {{
+        s.to_string()
+    }};
+    // Pre-parse char array
+    let parsed_chars = if s.starts_with('[') && s.len() > 2 {{
+        let inner = &s[1..s.len()-1];
+        inner.split(',')
+            .filter_map(|x| x.trim().trim_matches('"').chars().next())
+            .collect()
+    }} else {{
+        vec![]
+    }};
+    Arg {{ raw, parsed_str, parsed_chars }}
+}}
+
+impl Arg {{
+    fn as_mut_arg<'a, T: FromArgMut<'a>>(&'a mut self) -> T {{
+        T::from_arg_mut(self)
+    }}
+}}
+
+// Trait for converting Arg to target types (supports &mut via &mut self)
+trait FromArgMut<'a> {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self;
+}}
+
+impl<'a> FromArgMut<'a> for i32 {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{ arg.raw.trim().parse().unwrap_or(0) }}
+}}
+
+impl<'a> FromArgMut<'a> for i64 {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{ arg.raw.trim().parse().unwrap_or(0) }}
+}}
+
+impl<'a> FromArgMut<'a> for usize {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{ arg.raw.trim().parse().unwrap_or(0) }}
+}}
+
+impl<'a> FromArgMut<'a> for f64 {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{ arg.raw.trim().parse().unwrap_or(0.0) }}
+}}
+
+impl<'a> FromArgMut<'a> for bool {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{ arg.raw.trim() == "true" }}
+}}
+
+impl<'a> FromArgMut<'a> for String {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{ arg.parsed_str.clone() }}
+}}
+
+impl<'a> FromArgMut<'a> for &'a str {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{ &arg.parsed_str }}
+}}
+
+impl<'a> FromArgMut<'a> for Vec<i32> {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{
+        let s = arg.raw.trim();
+        if s == "[]" || !s.starts_with('[') {{ return vec![]; }}
+        let inner = &s[1..s.len()-1];
+        inner.split(',').filter_map(|x| x.trim().parse().ok()).collect()
+    }}
+}}
+
+impl<'a> FromArgMut<'a> for Vec<usize> {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{
+        let s = arg.raw.trim();
+        if s == "[]" || !s.starts_with('[') {{ return vec![]; }}
+        let inner = &s[1..s.len()-1];
+        inner.split(',').filter_map(|x| x.trim().parse().ok()).collect()
+    }}
+}}
+
+impl<'a> FromArgMut<'a> for Vec<char> {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{ arg.parsed_chars.clone() }}
+}}
+
+impl<'a> FromArgMut<'a> for &'a [char] {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{ &arg.parsed_chars }}
+}}
+
+impl<'a> FromArgMut<'a> for &'a mut Vec<char> {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{ &mut arg.parsed_chars }}
+}}
+
+impl<'a> FromArgMut<'a> for Vec<String> {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{
+        let s = arg.raw.trim();
+        if s == "[]" {{ return vec![]; }}
+        parse_json_array(s).into_iter()
+            .map(|x| {{
+                let x = x.trim();
+                if x.starts_with('"') && x.ends_with('"') {{ x[1..x.len()-1].to_string() }}
+                else {{ x.to_string() }}
+            }})
+            .collect()
+    }}
+}}
+
+impl<'a> FromArgMut<'a> for Vec<Vec<i32>> {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{
+        let s = arg.raw.trim();
+        if s == "[]" {{ return vec![]; }}
+        parse_json_array(s).into_iter()
+            .map(|x| {{
+                let x = x.trim();
+                if x == "[]" || !x.starts_with('[') {{ return vec![]; }}
+                let inner = &x[1..x.len()-1];
+                inner.split(',').filter_map(|n| n.trim().parse().ok()).collect()
+            }})
+            .collect()
+    }}
+}}
+
+fn print_result<T: std::fmt::Debug>(result: &T) {{
+    let s = format!("{{:?}}", result);
+    // Convert to JSON-like format
+    let s = s.replace(" ", "").replace("'", "\"");
+    println!("{{}}", s);
+}}
+"##,
+            code = structured.code,
+            escaped_input = escaped_input,
+            func_name = structured.function_name,
+            arg_decls = arg_decls,
+            arg_refs = arg_refs,
+        );
+
+        fs::write(&source_path, &full_code).await?;
+
+        let source_str = source_path.to_str().expect("temp path not UTF-8");
+        let binary_str = binary_path.to_str().expect("temp path not UTF-8");
+        let compile_output = self
+            .execute_command("rustc", &[source_str, "-o", binary_str, "--edition=2021"], 30000)
+            .await;
+
+        if let Err(e) = &compile_output {
+            return Ok(TestResult {
+                passed: false,
+                actual_output: String::new(),
+                expected_output: test_case.expected.clone(),
+                execution_time_ms: 0.0,
+                error: Some(format!("Compilation failed: {}", e)),
+            });
+        }
+
+        let start = Instant::now();
+        let output = self.execute_command(binary_str, &[], timeout_ms).await;
+        let execution_time_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+        Self::build_test_result(output, test_case, execution_time_ms)
     }
 
     async fn run_single_test(
@@ -486,4 +923,38 @@ fn extract_go_imports(code: &str) -> (String, String) {
         .collect();
 
     (user_imports.join("\n"), clean_code)
+}
+
+/// Count the number of top-level arguments in a JSON array
+/// e.g., "[[1,2,3], 9]" -> 2, "[3]" -> 1, "[\"hello\"]" -> 1
+fn count_json_args(input: &str) -> usize {
+    let s = input.trim();
+    if !s.starts_with('[') || !s.ends_with(']') {
+        return 1;
+    }
+    let inner = &s[1..s.len() - 1];
+    if inner.trim().is_empty() {
+        return 0;
+    }
+
+    let mut count = 1;
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut prev = ' ';
+
+    for c in inner.chars() {
+        if c == '"' && prev != '\\' {
+            in_string = !in_string;
+        }
+        if !in_string {
+            match c {
+                '[' | '{' => depth += 1,
+                ']' | '}' => depth -= 1,
+                ',' if depth == 0 => count += 1,
+                _ => {}
+            }
+        }
+        prev = c;
+    }
+    count
 }

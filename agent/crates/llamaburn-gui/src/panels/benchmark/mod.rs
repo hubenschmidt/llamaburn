@@ -669,8 +669,21 @@ impl BenchmarkPanel {
             heights[is_audio as usize]
         };
 
-        // Live output takes remaining space (minus effects rack)
-        self.render_live_output_with_reserved(ui, effects_rack_height);
+        // Error log panel (Code mode) - reserve space
+        let error_log_height = match self.benchmark_type {
+            BenchmarkType::Code if !self.code_state.error_log.is_empty() => {
+                if self.code_state.error_log_expanded { 350.0 } else { 30.0 }
+            }
+            _ => 0.0,
+        };
+
+        // Live output takes remaining space (minus effects rack and error log)
+        self.render_live_output_with_reserved(ui, effects_rack_height + error_log_height);
+
+        // Error log panel (Code mode only)
+        if self.benchmark_type == BenchmarkType::Code {
+            self.render_error_log(ui);
+        }
 
         // Effects rack panel at bottom (Audio mode only)
         if self.benchmark_type == BenchmarkType::Audio {

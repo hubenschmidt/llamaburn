@@ -1,6 +1,5 @@
 use crate::code_executor::{CodeExecutor, TestResult};
-use crate::ollama::OllamaClient;
-use futures::StreamExt;
+use crate::ollama::{code_output_schema, OllamaClient, StructuredCodeResponse};
 use llamaburn_core::{
     CodeBenchmarkConfig, CodeBenchmarkMetrics, CodeBenchmarkSummary, CodeProblem, Language,
     LlamaBurnError, Result,
@@ -142,118 +141,124 @@ impl CodeBenchmarkRunner {
         cancel_token: &CancellationToken,
         tx: &mpsc::Sender<CodeBenchmarkEvent>,
     ) -> Result<CodeBenchmarkMetrics> {
-        let _ = tx.send(CodeBenchmarkEvent::GeneratingCode).await;
-
-        let prompt = self.build_prompt(problem, config.language);
-        let start = Instant::now();
-
-        let stream_result = self
-            .client
-            .chat_stream(
-                &config.model_id,
-                &prompt,
-                Some(config.temperature),
-                config.max_tokens,
-            )
-            .await?;
-
-        let mut chunk_stream = stream_result;
-        let mut generated_code = String::new();
-        let mut first_token_time: Option<f64> = None;
-        let mut eval_count: u64 = 0;
-        let mut eval_duration: i64 = 0;
-
-        while let Some(chunk_result) = chunk_stream.next().await {
-            if cancel_token.is_cancelled() {
-                return Err(LlamaBurnError::Cancelled);
-            }
-
-            let chunk = chunk_result?;
-
-            if !chunk.content.is_empty() {
-                if first_token_time.is_none() {
-                    first_token_time = Some(start.elapsed().as_secs_f64() * 1000.0);
-                }
-                generated_code.push_str(&chunk.content);
-                let _ = tx
-                    .send(CodeBenchmarkEvent::Token {
-                        content: chunk.content,
-                    })
-                    .await;
-            }
-
-            if chunk.done {
-                eval_count = chunk.eval_count.unwrap_or(0);
-                eval_duration = chunk.eval_duration.unwrap_or(0);
-            }
+        if cancel_token.is_cancelled() {
+            return Err(LlamaBurnError::Cancelled);
         }
 
+        let _ = tx.send(CodeBenchmarkEvent::GeneratingCode).await;
+        let start = Instant::now();
+
+        // SINGLE CALL: Get structured output (single source of truth)
+        let structured = self
+            .get_structured_code(config, problem)
+            .await
+            .map_err(|e| LlamaBurnError::OllamaError(format!("Structured output failed: {}", e)))?;
+
         let generation_time_ms = start.elapsed().as_secs_f64() * 1000.0;
-        let ttft_ms = first_token_time.unwrap_or(generation_time_ms);
 
-        let eval_duration_ns = eval_duration.max(0) as f64;
-        let tokens_per_sec = if eval_duration_ns > 0.0 {
-            (eval_count as f64) / (eval_duration_ns / 1_000_000_000.0)
-        } else {
-            0.0
-        };
+        // Display the code to Live Output (same code that will be tested)
+        let _ = tx.send(CodeBenchmarkEvent::Token {
+            content: structured.code.clone(),
+        }).await;
 
-        // Extract code from response (remove markdown fences if present)
-        let code = extract_code(&generated_code);
-
-        // Run tests if enabled
+        // Run tests if enabled - uses same structured response
         let (tests_passed, tests_total, execution_time_ms, compilation_error, runtime_error) =
             match config.run_tests {
                 false => (0, 0, 0.0, None, None),
                 true => {
-                    let results = self.run_tests(&code, config.language, problem, tx).await;
-                    let results = match results {
-                        Err(e) => return Ok(CodeBenchmarkMetrics {
-                            problem_id: problem.id.clone(),
-                            difficulty: problem.difficulty,
-                            ttft_ms,
-                            tokens_per_sec,
-                            tests_passed: 0,
-                            tests_total: problem.test_cases.len() as u32,
-                            execution_time_ms: 0.0,
-                            generated_code: code,
-                            compilation_error: Some(e),
-                            runtime_error: None,
-                        }),
-                        Ok(r) => r,
-                    };
-                    let passed = results.iter().filter(|r| r.passed).count() as u32;
-                    let total = results.len() as u32;
-                    let exec_time = results.iter().map(|r| r.execution_time_ms).sum();
-                    let comp_err = results.iter()
-                        .filter_map(|r| r.error.as_ref())
-                        .find(|e| e.contains("Compilation"))
-                        .cloned();
-                    let run_err = results.iter()
-                        .filter_map(|r| r.error.as_ref())
-                        .find(|e| !e.contains("Compilation"))
-                        .cloned();
-                    (passed, total, exec_time, comp_err, run_err)
+                    let results = self
+                        .run_tests_structured(&structured, config.language, problem, tx)
+                        .await;
+
+                    match results {
+                        Err(e) => (0, problem.test_cases.len() as u32, 0.0, Some(e), None),
+                        Ok(r) => {
+                            let passed = r.iter().filter(|t| t.passed).count() as u32;
+                            let total = r.len() as u32;
+                            let exec_time = r.iter().map(|t| t.execution_time_ms).sum();
+                            let comp_err = r.iter()
+                                .filter_map(|t| t.error.as_ref())
+                                .find(|e| e.contains("Compilation"))
+                                .cloned();
+                            let run_err = r.iter()
+                                .filter_map(|t| t.error.as_ref())
+                                .find(|e| !e.contains("Compilation"))
+                                .cloned();
+                            (passed, total, exec_time, comp_err, run_err)
+                        }
+                    }
                 }
             };
 
         Ok(CodeBenchmarkMetrics {
             problem_id: problem.id.clone(),
             difficulty: problem.difficulty,
-            ttft_ms,
-            tokens_per_sec,
+            ttft_ms: generation_time_ms,  // No streaming, TTFT = total generation time
+            tokens_per_sec: 0.0,          // Not measured without streaming
             tests_passed,
             tests_total,
             execution_time_ms,
-            generated_code: code,
+            generated_code: structured.code,  // Same code that was displayed
             compilation_error,
             runtime_error,
         })
     }
 
-    async fn run_tests(
+    /// Get structured code output for reliable test execution (CALL 2)
+    async fn get_structured_code(
         &self,
-        code: &str,
+        config: &CodeBenchmarkConfig,
+        problem: &CodeProblem,
+    ) -> Result<StructuredCodeResponse> {
+        let prompt = self.build_structured_prompt(problem, config.language);
+        let schema = code_output_schema();
+
+        self.client
+            .chat_structured(&config.model_id, &prompt, schema, Some(0.0))
+            .await
+    }
+
+    /// Build prompt for structured output - requests clean JSON response
+    fn build_structured_prompt(&self, problem: &CodeProblem, language: Language) -> String {
+        let signature = problem
+            .signatures
+            .get(&language)
+            .cloned()
+            .unwrap_or_else(|| format!("// Implement {} solution", problem.id));
+
+        let examples = problem
+            .test_cases
+            .iter()
+            .take(2)
+            .map(|tc| format!("Input: {}\nOutput: {}", tc.input, tc.expected))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        format!(
+            r#"Implement a solution for this problem in {}.
+
+{}
+
+{}
+
+Examples:
+{}
+
+Return a JSON object with exactly these fields:
+- "function_name": the name of your solution function (string)
+- "imports": array of required imports/packages, names only without 'import' keyword (array of strings)
+- "code": the complete function code only - NO package declaration, NO main function, NO example usage (string)"#,
+            language.label(),
+            signature,
+            problem.description,
+            examples
+        )
+    }
+
+    /// Run tests using structured output - clean code components
+    async fn run_tests_structured(
+        &self,
+        structured: &StructuredCodeResponse,
         language: Language,
         problem: &CodeProblem,
         tx: &mpsc::Sender<CodeBenchmarkEvent>,
@@ -265,7 +270,7 @@ impl CodeBenchmarkRunner {
 
         let test_results = self
             .executor
-            .run_tests(code, language, test_cases, problem.time_limit_ms)
+            .run_tests_structured(structured, language, test_cases, problem.time_limit_ms)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -283,38 +288,6 @@ impl CodeBenchmarkRunner {
         }
 
         Ok(test_results)
-    }
-
-    fn build_prompt(&self, problem: &CodeProblem, language: Language) -> String {
-        let signature = problem
-            .signatures
-            .get(&language)
-            .cloned()
-            .unwrap_or_else(|| format!("// Implement {} solution", problem.id));
-
-        let examples = problem
-            .test_cases
-            .iter()
-            .take(2)
-            .map(|tc| format!("Input: {}\nOutput: {}", tc.input, tc.expected))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        format!(
-            r#"Implement the following function in {}. Return ONLY the code, no explanation.
-
-{}
-
-{}
-
-Examples:
-{}
-"#,
-            language.label(),
-            signature,
-            problem.description,
-            examples
-        )
     }
 
     fn calculate_summary(metrics: &[CodeBenchmarkMetrics]) -> CodeBenchmarkSummary {
@@ -401,69 +374,4 @@ pub async fn run_tests_only(
     let exec_time = test_results.iter().map(|r| r.execution_time_ms).sum();
 
     Ok((passed, total, exec_time))
-}
-
-fn extract_code(response: &str) -> String {
-    let lines: Vec<&str> = response.lines().collect();
-
-    // Try 1: Find code block with fences (```python, ```rust, etc.)
-    if let Some(code) = extract_fenced_code(&lines) {
-        return code;
-    }
-
-    // Try 2: Look for </think> tag and take everything after
-    if let Some(code) = extract_after_think_tag(response) {
-        return code;
-    }
-
-    // Try 3: Find function definition without fences
-    if let Some(code) = extract_function_definition(&lines) {
-        return code;
-    }
-
-    // Fallback: return trimmed response
-    response.trim().to_string()
-}
-
-fn extract_fenced_code(lines: &[&str]) -> Option<String> {
-    let start_idx = lines.iter().position(|l| l.trim().starts_with("```"))?;
-    let end_idx = lines[start_idx + 1..]
-        .iter()
-        .position(|l| l.trim() == "```")
-        .map(|i| start_idx + 1 + i)
-        .unwrap_or(lines.len());
-    Some(lines[start_idx + 1..end_idx].join("\n"))
-}
-
-fn extract_after_think_tag(response: &str) -> Option<String> {
-    let after_think = response.split("</think>").nth(1)?.trim();
-    if after_think.is_empty() {
-        return None;
-    }
-    // If there's a code fence after </think>, extract it
-    let lines: Vec<&str> = after_think.lines().collect();
-    if let Some(code) = extract_fenced_code(&lines) {
-        return Some(code);
-    }
-    // Otherwise return everything after </think>
-    Some(after_think.to_string())
-}
-
-fn extract_function_definition(lines: &[&str]) -> Option<String> {
-    // Look for common function definition patterns
-    let patterns = ["function ", "def ", "fn ", "pub fn ", "async fn "];
-    let start_idx = lines.iter().position(|l| {
-        let trimmed = l.trim();
-        patterns.iter().any(|p| trimmed.starts_with(p))
-    })?;
-    // Take from function definition to end (or until we hit obvious non-code)
-    let code_lines: Vec<&str> = lines[start_idx..]
-        .iter()
-        .take_while(|l| !l.trim().starts_with("Return only") && !l.trim().starts_with("That's it"))
-        .copied()
-        .collect();
-    if code_lines.is_empty() {
-        return None;
-    }
-    Some(code_lines.join("\n"))
 }

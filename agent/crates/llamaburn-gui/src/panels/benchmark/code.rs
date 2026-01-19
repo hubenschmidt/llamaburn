@@ -30,6 +30,18 @@ pub struct BenchmarkCombo {
     pub max_tokens: u32,
 }
 
+/// Entry in the error log for debugging
+#[derive(Debug, Clone)]
+pub struct ErrorLogEntry {
+    pub timestamp: std::time::Instant,
+    pub combo_label: String,
+    pub problem_id: String,
+    pub test_num: u32,
+    pub expected: String,
+    pub actual: String,
+    pub error: Option<String>,
+}
+
 /// Code benchmark specific state
 #[derive(Default)]
 pub struct CodeBenchmarkState {
@@ -59,6 +71,10 @@ pub struct CodeBenchmarkState {
     pub code_metrics: Vec<CodeBenchmarkMetrics>,
     pub code_summary: Option<CodeBenchmarkSummary>,
     pub code_output: String,
+
+    // Error log for debugging
+    pub error_log: Vec<ErrorLogEntry>,
+    pub error_log_expanded: bool,
 
     // Rankings
     pub code_leaderboard: Vec<(String, f64)>,
@@ -102,6 +118,9 @@ impl CodeBenchmarkState {
             code_metrics: Vec::new(),
             code_summary: None,
             code_output: String::new(),
+
+            error_log: Vec::new(),
+            error_log_expanded: false,
 
             code_leaderboard: Vec::new(),
             last_language_for_rankings: None,
@@ -400,15 +419,22 @@ impl BenchmarkPanel {
     /// Render running controls (Pause/Cancel buttons and progress). Returns true if Pause clicked.
     fn render_running_controls(&mut self, ui: &mut egui::Ui) -> bool {
         let mut pause_clicked = false;
+
+        // Progress bar
+        let completed = self.code_state.queue_completed;
+        let total = self.code_state.queue_total;
+        if total > 0 {
+            let progress = (completed as f32 + 0.5) / total as f32; // +0.5 for "in progress"
+            ui.horizontal(|ui| {
+                ui.add(egui::ProgressBar::new(progress.min(1.0)).show_percentage());
+                ui.label(format!("{} of {} executed", completed, total));
+            });
+        }
+
         ui.horizontal(|ui| {
             pause_clicked = ui.button("Pause").clicked();
             let cancel_clicked = ui.button("Cancel").clicked();
             ui.spinner();
-
-            // Progress counter
-            let current = self.code_state.queue_completed + 1;
-            let total = self.code_state.queue_total;
-            ui.label(format!("{}/{}", current, total));
 
             // ETA calculation (after first combo completes)
             let eta_label = self.calculate_eta_label();
@@ -598,9 +624,9 @@ impl BenchmarkPanel {
         ui.separator();
         ui.add_space(5.0);
 
-        // Problem set selection
+        // Input section - problem set selection
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Problems").strong());
+            ui.label(egui::RichText::new("Input").strong());
             ui.add_space(10.0);
             ui.add_enabled_ui(!disabled, |ui| {
                 let current_set_name = self.code_state.problem_sets
@@ -682,19 +708,39 @@ impl BenchmarkPanel {
                 }
             });
 
-        ui.add_space(10.0);
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(5.0);
 
-        // Run button and options
+        // Execution section
+        ui.label(egui::RichText::new("Execution").strong());
+        ui.add_space(5.0);
+
         let running = self.code_state.code_running || queue_running;
-        let pause_clicked = running && self.render_running_controls(ui);
-        if pause_clicked {
-            self.pause_matrix_benchmark();
-        }
+
+        // Show running controls (Pause/Cancel) when running
         if running {
+            let pause_clicked = self.render_running_controls(ui);
+            if pause_clicked {
+                self.pause_matrix_benchmark();
+            }
             return;
         }
-        ui.horizontal(|ui| {
 
+        // Progress indicator (when not running but has completed some)
+        let completed = self.code_state.queue_completed;
+        let total = self.code_state.queue_total;
+        if total > 0 {
+            let progress = completed as f32 / total as f32;
+            ui.horizontal(|ui| {
+                ui.add(egui::ProgressBar::new(progress).show_percentage());
+                ui.label(format!("{} of {} executed", completed, total));
+            });
+            ui.add_space(5.0);
+        }
+
+        // Run button and options
+        ui.horizontal(|ui| {
             // Calculate combinations
             let combo_count = self.code_state.combination_count();
             let has_selections = !self.code_state.selected_models.is_empty()
@@ -720,6 +766,9 @@ impl BenchmarkPanel {
             if ui.add_enabled(has_selections, button).clicked() {
                 self.start_matrix_benchmark();
             }
+        });
+
+        ui.horizontal(|ui| {
             ui.checkbox(&mut self.code_state.auto_run_tests, "Run Tests");
             ui.checkbox(&mut self.code_state.skip_on_error, "Skip on Error")
                 .on_hover_text("Skip failed combos and continue (for unattended runs)");
@@ -1014,10 +1063,24 @@ impl BenchmarkPanel {
                     self.live_output.push_str(&format!("\n  Test {}/{}: {} ", test_num, test_total, status));
                     if !passed {
                         self.live_output.push_str(&format!("Expected: {} | Actual: {}", expected, actual));
+                        // Log to error log for debugging panel
+                        let combo_label = self.code_state.current_combo.as_ref()
+                            .map(|c| format!("{} | {} | T={:.1}", c.model, c.language.label(), c.temperature))
+                            .unwrap_or_default();
+                        let problem_id = self.code_state.current_problem_id.clone().unwrap_or_default();
+                        self.code_state.error_log.push(ErrorLogEntry {
+                            timestamp: std::time::Instant::now(),
+                            combo_label,
+                            problem_id,
+                            test_num,
+                            expected: expected.clone(),
+                            actual: actual.clone(),
+                            error: error.clone(),
+                        });
                     } else {
                         self.live_output.push_str("PASS");
                     }
-                    if let Some(e) = error {
+                    if let Some(e) = &error {
                         self.live_output.push_str(&format!("\n    Error: {}", e));
                     }
                 }
@@ -1046,11 +1109,15 @@ impl BenchmarkPanel {
                         self.code_state.combo_durations_ms.push(start.elapsed().as_millis() as u64);
                     }
 
+                    // Always increment completed count when a combo finishes
+                    self.code_state.queue_completed += 1;
+
                     // Advance to next combo in queue
                     let has_more = !self.code_state.combo_queue.is_empty();
-                    if !has_more { continue; }
-
-                    self.code_state.queue_completed += 1;
+                    if !has_more {
+                        self.code_state.current_combo = None;
+                        continue;
+                    }
                     // Update batch state for resume capability
                     if let Some(mut batch) = self.code_state.to_batch_state() {
                         batch.updated_at = std::time::SystemTime::now()
@@ -1244,6 +1311,87 @@ impl BenchmarkPanel {
             .history_service
             .get_code_leaderboard(lang, 5)
             .unwrap_or_default();
+    }
+
+    /// Render collapsible error log panel at bottom of screen
+    pub fn render_error_log(&mut self, ui: &mut egui::Ui) {
+        let error_count = self.code_state.error_log.len();
+        if error_count == 0 {
+            return;
+        }
+
+        ui.add_space(5.0);
+
+        let header_text = format!("⚠️ Error Log ({} errors)", error_count);
+        let header = egui::CollapsingHeader::new(
+            egui::RichText::new(&header_text).color(egui::Color32::from_rgb(255, 180, 100)),
+        )
+        .default_open(self.code_state.error_log_expanded)
+        .show(ui, |ui| {
+            self.code_state.error_log_expanded = true;
+
+            // Clear button
+            ui.horizontal(|ui| {
+                if ui.small_button("Clear").clicked() {
+                    self.code_state.error_log.clear();
+                }
+                if ui.small_button("Copy All").clicked() {
+                    let text = self.code_state.error_log.iter()
+                        .map(|e| {
+                            let err_str = e.error.as_deref().unwrap_or("");
+                            format!(
+                                "[{}] {} - Test #{}\n  Expected: {}\n  Actual: {}\n  Error: {}",
+                                e.combo_label, e.problem_id, e.test_num,
+                                e.expected, e.actual, err_str
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    ui.ctx().copy_text(text);
+                }
+            });
+
+            ui.add_space(5.0);
+
+            // Scrollable error list
+            egui::ScrollArea::vertical()
+                .max_height(300.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    for entry in self.code_state.error_log.iter().rev().take(50) {
+                        egui::Frame::group(ui.style())
+                            .inner_margin(egui::vec2(8.0, 4.0))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(&entry.problem_id).strong());
+                                    ui.label(format!("Test #{}", entry.test_num));
+                                    ui.label(egui::RichText::new(&entry.combo_label).weak().small());
+                                });
+
+                                ui.horizontal(|ui| {
+                                    ui.label("Expected:");
+                                    ui.label(egui::RichText::new(&entry.expected).monospace());
+                                });
+
+                                ui.horizontal(|ui| {
+                                    ui.label("Actual:");
+                                    let actual_text = if entry.actual.is_empty() { "(empty)" } else { &entry.actual };
+                                    ui.label(egui::RichText::new(actual_text).monospace().color(egui::Color32::from_rgb(255, 100, 100)));
+                                });
+
+                                if let Some(err) = &entry.error {
+                                    // Show full error in a wrapped label
+                                    ui.label(egui::RichText::new(err).small().color(egui::Color32::from_rgb(255, 150, 150)));
+                                }
+                            });
+                        ui.add_space(2.0);
+                    }
+                });
+        });
+
+        if !header.fully_open() {
+            self.code_state.error_log_expanded = false;
+        }
     }
 }
 

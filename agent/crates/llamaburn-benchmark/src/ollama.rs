@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use futures::stream::{BoxStream, StreamExt};
 use llamaburn_core::{LlamaBurnError, ModelConfig, Result};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -86,6 +87,37 @@ pub struct StreamChunk {
     pub eval_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub eval_duration: Option<i64>,
+}
+
+/// Structured output for code generation - clean components for test harness
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructuredCodeResponse {
+    pub function_name: String,
+    pub imports: Vec<String>,
+    pub code: String,
+}
+
+/// Returns the JSON schema for structured code output
+pub fn code_output_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "function_name": {
+                "type": "string",
+                "description": "Name of the main solution function"
+            },
+            "imports": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Required imports/packages (without 'import' keyword)"
+            },
+            "code": {
+                "type": "string",
+                "description": "Complete function code only, no package declaration or main function"
+            }
+        },
+        "required": ["function_name", "imports", "code"]
+    })
 }
 
 impl OllamaClient {
@@ -269,6 +301,63 @@ impl OllamaClient {
             });
 
         Ok(Box::pin(chunk_stream))
+    }
+
+    /// Chat with structured output - returns JSON matching the provided schema
+    pub async fn chat_structured<T: DeserializeOwned>(
+        &self,
+        model: &str,
+        prompt: &str,
+        schema: serde_json::Value,
+        temperature: Option<f32>,
+    ) -> Result<T> {
+        let url = format!("{}/api/chat", self.host);
+
+        let request = serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": false,
+            "format": schema,
+            "options": {
+                "temperature": temperature.unwrap_or(0.0)
+            }
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .json(&request)
+            .timeout(Duration::from_secs(300)) // Longer timeout for structured output
+            .send()
+            .await
+            .map_err(|e| LlamaBurnError::Http(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(LlamaBurnError::OllamaError(format!(
+                "Structured chat failed: {} - {}",
+                status, body
+            )));
+        }
+
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| LlamaBurnError::Http(e.to_string()))?;
+
+        // Parse the outer response to get message content
+        let chat_resp: ChatResponse = serde_json::from_str(&body).map_err(|e| {
+            LlamaBurnError::Http(format!("Failed to parse chat response: {} - {}", e, &body[..body.len().min(500)]))
+        })?;
+
+        // Parse the message content as the structured type
+        serde_json::from_str(&chat_resp.message.content).map_err(|e| {
+            LlamaBurnError::Http(format!(
+                "Failed to parse structured content: {} - Content: {}",
+                e, &chat_resp.message.content[..chat_resp.message.content.len().min(500)]
+            ))
+        })
     }
 
     pub async fn warmup(&self, model: &str) -> Result<()> {
