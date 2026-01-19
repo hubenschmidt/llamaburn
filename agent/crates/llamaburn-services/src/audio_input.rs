@@ -357,14 +357,18 @@ impl AudioInputService {
         let deadline = std::time::Instant::now() + Duration::from_secs(duration_secs as u64);
         while std::time::Instant::now() < deadline {
             if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) {
-                let mut samples = samples_for_callback.lock().unwrap();
-                samples.extend(chunk);
+                samples_for_callback
+                    .lock()
+                    .expect("audio sample mutex poisoned")
+                    .extend(chunk);
             }
         }
 
         drop(stream);
 
-        let raw_samples = std::mem::take(&mut *samples_collected.lock().unwrap());
+        let raw_samples = std::mem::take(
+            &mut *samples_collected.lock().expect("audio sample mutex poisoned"),
+        );
         info!(samples = raw_samples.len(), "Capture complete");
 
         // Convert to mono and resample to 16kHz
@@ -419,12 +423,17 @@ impl AudioInputService {
             let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) else {
                 continue;
             };
-            samples_for_callback.lock().unwrap().extend(chunk);
+            samples_for_callback
+                .lock()
+                .expect("audio sample mutex poisoned")
+                .extend(chunk);
         }
 
         drop(stream);
 
-        let raw_samples = std::mem::take(&mut *samples_collected.lock().unwrap());
+        let raw_samples = std::mem::take(
+            &mut *samples_collected.lock().expect("audio sample mutex poisoned"),
+        );
         info!(samples = raw_samples.len(), sample_rate, channels, "Capture with config complete");
 
         Ok((raw_samples, sample_rate, channels))

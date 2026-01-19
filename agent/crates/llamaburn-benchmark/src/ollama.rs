@@ -1,6 +1,10 @@
+use std::time::Duration;
+
 use futures::stream::{BoxStream, StreamExt};
 use llamaburn_core::{LlamaBurnError, ModelConfig, Result};
 use serde::{Deserialize, Serialize};
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct OllamaClient {
@@ -88,7 +92,10 @@ impl OllamaClient {
     pub fn new(host: &str) -> Self {
         Self {
             host: host.to_string(),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .expect("failed to build reqwest client"),
         }
     }
 

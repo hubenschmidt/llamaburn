@@ -283,7 +283,7 @@ impl AudioOutputService {
                     }
                 };
 
-                let mut buf = buffer_clone.lock().unwrap();
+                let mut buf = buffer_clone.lock().expect("audio buffer mutex poisoned");
                 buf.extend(output);
 
                 // Limit buffer to 2x latency to prevent runaway accumulation while allowing headroom
@@ -302,8 +302,7 @@ impl AudioOutputService {
             .build_output_stream(
                 &config,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    let mut buf = buffer.lock().unwrap();
-
+                    let mut buf = buffer.lock().expect("audio buffer mutex poisoned");
                     for sample in data.iter_mut() {
                         *sample = buf.pop_front().unwrap_or(0.0);
                     }

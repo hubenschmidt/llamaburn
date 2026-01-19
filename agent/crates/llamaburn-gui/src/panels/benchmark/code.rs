@@ -287,7 +287,7 @@ impl BenchmarkPanel {
                     let val = self.code_state.custom_temperature;
                     if !self.code_state.selected_temperatures.contains(&val) {
                         self.code_state.selected_temperatures.push(val);
-                        self.code_state.selected_temperatures.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                        self.code_state.selected_temperatures.sort_by(|a, b| a.partial_cmp(b).expect("NaN in temperatures"));
                     }
                 }
             });
@@ -540,7 +540,7 @@ impl BenchmarkPanel {
         let ollama_host = self.ollama.host().to_string();
 
         std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
             rt.block_on(async {
                 let runner = CodeBenchmarkRunner::new(&ollama_host);
                 let (async_tx, mut async_rx) = tokio::sync::mpsc::channel(100);

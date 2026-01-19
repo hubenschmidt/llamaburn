@@ -1,10 +1,11 @@
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use llamaburn_core::{Language, TestCase};
 use tempfile::TempDir;
 use thiserror::Error;
+use tokio::fs;
 use tokio::process::Command;
-use std::process::Stdio;
 
 #[derive(Debug, Error)]
 pub enum CodeExecutorError {
@@ -130,7 +131,7 @@ impl CodeExecutor {
         test_case: &TestCase,
         timeout_ms: u32,
     ) -> Result<TestResult> {
-        let func_name = extract_function_name(code, Language::Rust);
+        let _func_name = extract_function_name(code, Language::Rust);
         let source_path = self.temp_dir.path().join("solution.rs");
         let binary_path = self.temp_dir.path().join("solution");
 
@@ -149,18 +150,15 @@ fn main() {{
             input = test_case.input,
         );
 
-        std::fs::write(&source_path, &full_code)?;
+        fs::write(&source_path, &full_code).await?;
 
         // Compile
+        let source_str = source_path.to_str().expect("temp path not UTF-8");
+        let binary_str = binary_path.to_str().expect("temp path not UTF-8");
         let compile_output = self
             .execute_command(
                 "rustc",
-                &[
-                    source_path.to_str().unwrap(),
-                    "-o",
-                    binary_path.to_str().unwrap(),
-                    "--edition=2021",
-                ],
+                &[source_str, "-o", binary_str, "--edition=2021"],
                 30000,
             )
             .await;
@@ -176,9 +174,7 @@ fn main() {{
         }
 
         let start = Instant::now();
-        let output = self
-            .execute_command(binary_path.to_str().unwrap(), &[], timeout_ms)
-            .await;
+        let output = self.execute_command(binary_str, &[], timeout_ms).await;
         let execution_time_ms = start.elapsed().as_secs_f64() * 1000.0;
 
         Self::build_test_result(output, test_case, execution_time_ms)
@@ -217,11 +213,12 @@ func main() {{
             func_name = func_name,
         );
 
-        std::fs::write(&source_path, &full_code)?;
+        fs::write(&source_path, &full_code).await?;
 
         let start = Instant::now();
+        let source_str = source_path.to_str().expect("temp path not UTF-8");
         let output = self
-            .execute_command("go", &["run", source_path.to_str().unwrap()], timeout_ms)
+            .execute_command("go", &["run", source_str], timeout_ms)
             .await;
         let execution_time_ms = start.elapsed().as_secs_f64() * 1000.0;
 
@@ -302,7 +299,7 @@ fn extract_function_name(code: &str, language: Language) -> String {
         Language::Go => r"func\s+(\w+)\s*\(",
     };
 
-    let re = regex::Regex::new(pattern).unwrap();
+    let re = regex::Regex::new(pattern).expect("invalid function name regex");
     re.captures(code)
         .and_then(|c| c.get(1).or_else(|| c.get(2)))
         .map(|m| m.as_str().to_string())

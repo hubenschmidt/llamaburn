@@ -242,7 +242,6 @@ impl CodeBenchmarkRunner {
         tx: &mpsc::Sender<CodeBenchmarkEvent>,
     ) -> std::result::Result<Vec<TestResult>, String> {
         let test_cases = &problem.test_cases;
-        let mut results = Vec::with_capacity(test_cases.len());
 
         for (idx, _test_case) in test_cases.iter().enumerate() {
             let _ = tx
@@ -253,28 +252,24 @@ impl CodeBenchmarkRunner {
                 .await;
         }
 
-        match self
+        let test_results = self
             .executor
             .run_tests(code, language, test_cases, problem.time_limit_ms)
             .await
-        {
-            Ok(test_results) => {
-                for result in &test_results {
-                    let _ = tx
-                        .send(CodeBenchmarkEvent::TestResult {
-                            passed: result.passed,
-                            expected: result.expected_output.clone(),
-                            actual: result.actual_output.clone(),
-                            error: result.error.clone(),
-                        })
-                        .await;
-                }
-                results = test_results;
-            }
-            Err(e) => return Err(e.to_string()),
+            .map_err(|e| e.to_string())?;
+
+        for result in &test_results {
+            let _ = tx
+                .send(CodeBenchmarkEvent::TestResult {
+                    passed: result.passed,
+                    expected: result.expected_output.clone(),
+                    actual: result.actual_output.clone(),
+                    error: result.error.clone(),
+                })
+                .await;
         }
 
-        Ok(results)
+        Ok(test_results)
     }
 
     fn build_prompt(&self, problem: &CodeProblem, language: Language) -> String {

@@ -1,12 +1,14 @@
-use llamaburn_benchmark::{BenchmarkEvent, BenchmarkRunner};
-use llamaburn_core::BenchmarkConfig;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 use std::thread;
+
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument};
+
+use llamaburn_benchmark::{BenchmarkEvent, BenchmarkRunner};
+use llamaburn_core::BenchmarkConfig;
 
 /// Default prompts for text benchmarks
 const DEFAULT_PROMPTS: &[&str] = &[

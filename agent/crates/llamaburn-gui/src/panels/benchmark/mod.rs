@@ -16,9 +16,8 @@ use llamaburn_core::{
     EffectDetectionResult, EffectDetectionTool, WhisperModel,
 };
 use llamaburn_services::{
-    BenchmarkEvent, BenchmarkHistoryEntry, BenchmarkService, BenchmarkSummary,
-    EffectDetectionService, HistoryService, ModelInfo, ModelInfoService, OllamaClient,
-    OllamaError, WhisperService,
+    BenchmarkEvent, BenchmarkService, BenchmarkSummary, EffectDetectionService, HistoryService,
+    ModelInfo, ModelInfoService, OllamaClient, OllamaError, WhisperService,
 };
 
 pub use code::CodeBenchmarkState;
