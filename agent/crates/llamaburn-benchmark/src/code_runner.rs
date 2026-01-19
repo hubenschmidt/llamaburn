@@ -393,21 +393,66 @@ pub async fn run_tests_only(
 }
 
 fn extract_code(response: &str) -> String {
-    // Find first code block in response (handles thinking text before code)
     let lines: Vec<&str> = response.lines().collect();
 
-    // Find opening fence (```python, ```rust, etc.)
-    let start = lines.iter().position(|l| l.trim().starts_with("```"));
-    let Some(start_idx) = start else {
-        return response.trim().to_string();
-    };
+    // Try 1: Find code block with fences (```python, ```rust, etc.)
+    if let Some(code) = extract_fenced_code(&lines) {
+        return code;
+    }
 
-    // Find closing fence after start
-    let end = lines[start_idx + 1..]
+    // Try 2: Look for </think> tag and take everything after
+    if let Some(code) = extract_after_think_tag(response) {
+        return code;
+    }
+
+    // Try 3: Find function definition without fences
+    if let Some(code) = extract_function_definition(&lines) {
+        return code;
+    }
+
+    // Fallback: return trimmed response
+    response.trim().to_string()
+}
+
+fn extract_fenced_code(lines: &[&str]) -> Option<String> {
+    let start_idx = lines.iter().position(|l| l.trim().starts_with("```"))?;
+    let end_idx = lines[start_idx + 1..]
         .iter()
         .position(|l| l.trim() == "```")
         .map(|i| start_idx + 1 + i)
         .unwrap_or(lines.len());
+    Some(lines[start_idx + 1..end_idx].join("\n"))
+}
 
-    lines[start_idx + 1..end].join("\n")
+fn extract_after_think_tag(response: &str) -> Option<String> {
+    let after_think = response.split("</think>").nth(1)?.trim();
+    if after_think.is_empty() {
+        return None;
+    }
+    // If there's a code fence after </think>, extract it
+    let lines: Vec<&str> = after_think.lines().collect();
+    if let Some(code) = extract_fenced_code(&lines) {
+        return Some(code);
+    }
+    // Otherwise return everything after </think>
+    Some(after_think.to_string())
+}
+
+fn extract_function_definition(lines: &[&str]) -> Option<String> {
+    // Look for common function definition patterns
+    let patterns = ["function ", "def ", "fn ", "pub fn ", "async fn "];
+    let start_idx = lines.iter().position(|l| {
+        let trimmed = l.trim();
+        patterns.iter().any(|p| trimmed.starts_with(p))
+    })?;
+    // Take from function definition to end (or until we hit obvious non-code)
+    let code_lines: Vec<&str> = lines[start_idx..]
+        .iter()
+        .take_while(|l| !l.trim().starts_with("Return only") && !l.trim().starts_with("That's it"))
+        .copied()
+        .collect();
+    if code_lines.is_empty() {
+        return None;
+    }
+    Some(code_lines.join("\n"))
 }

@@ -1,8 +1,18 @@
 use eframe::egui;
-use llamaburn_core::BenchmarkType;
+use llamaburn_core::{BenchmarkType, Language};
 use llamaburn_services::{AudioHistoryEntry, BenchmarkHistoryEntry, CodeHistoryEntry, HistoryFilter, HistoryService};
 use std::collections::HashSet;
 use std::sync::Arc;
+
+/// Request to load benchmark params from history
+#[derive(Clone)]
+pub struct LoadCodeBenchmarkRequest {
+    pub model_id: String,
+    pub language: Language,
+    pub temperature: f32,
+    pub max_tokens: Option<u32>,
+    pub problem_ids: Vec<String>,
+}
 
 /// Unified history entry for display
 pub enum HistoryEntry {
@@ -112,6 +122,25 @@ impl HistoryEntry {
             HistoryEntry::Code(_) => "By Diff",
         }
     }
+
+    pub fn session_display(&self) -> String {
+        let HistoryEntry::Code(e) = self else {
+            return "—".to_string();
+        };
+        let Some(ref session_id) = e.session_id else {
+            return "—".to_string();
+        };
+        session_id.chars().take(6).collect()
+    }
+
+    /// Code benchmark params: language, temperature, max_tokens
+    pub fn code_params(&self) -> String {
+        let HistoryEntry::Code(e) = self else {
+            return "—".to_string();
+        };
+        let tokens = e.config.max_tokens.map(|t| t.to_string()).unwrap_or("—".to_string());
+        format!("{} T={:.1} {}tok", e.language.label(), e.config.temperature, tokens)
+    }
 }
 
 pub struct HistoryPanel {
@@ -122,6 +151,7 @@ pub struct HistoryPanel {
     delete_confirm: Option<String>,
     selected_ids: HashSet<String>,
     show_comparison: bool,
+    pub load_request: Option<LoadCodeBenchmarkRequest>,
 }
 
 impl HistoryPanel {
@@ -134,7 +164,13 @@ impl HistoryPanel {
             delete_confirm: None,
             selected_ids: HashSet::new(),
             show_comparison: false,
+            load_request: None,
         }
+    }
+
+    /// Take the pending load request (clears it)
+    pub fn take_load_request(&mut self) -> Option<LoadCodeBenchmarkRequest> {
+        self.load_request.take()
     }
 
     fn refresh(&mut self) {
@@ -258,8 +294,8 @@ impl HistoryPanel {
                         self.show_comparison = true;
                     }
 
-                    if selected_count > 0 && ui.button("Clear Selection").clicked() {
-                        self.selected_ids.clear();
+                    if selected_count > 0 && ui.button(format!("Delete Selected ({})", selected_count)).clicked() {
+                        self.delete_confirm = Some("__selected__".to_string());
                     }
                 }
             }
@@ -273,6 +309,7 @@ impl HistoryPanel {
                 .show(ui.ctx(), |ui| {
                     let msg = match id.as_str() {
                         "__all__" => "Delete ALL benchmark history?".to_string(),
+                        "__selected__" => format!("Delete {} selected entries?", self.selected_ids.len()),
                         _ => format!("Delete entry {}?", &id[..8.min(id.len())]),
                     };
                     ui.label(msg);
@@ -285,12 +322,25 @@ impl HistoryPanel {
                             .button(egui::RichText::new("Delete").color(egui::Color32::RED))
                             .clicked()
                         {
-                            let result = match id.as_str() {
-                                "__all__" => self.history_service.clear_all(),
-                                _ => self.history_service.delete(&id),
-                            };
-                            if let Err(e) = result {
-                                tracing::warn!("Failed to delete: {}", e);
+                            match id.as_str() {
+                                "__all__" => {
+                                    if let Err(e) = self.history_service.clear_all() {
+                                        tracing::warn!("Failed to delete all: {}", e);
+                                    }
+                                }
+                                "__selected__" => {
+                                    for entry_id in &self.selected_ids.clone() {
+                                        if let Err(e) = self.history_service.delete(entry_id) {
+                                            tracing::warn!("Failed to delete {}: {}", entry_id, e);
+                                        }
+                                    }
+                                    self.selected_ids.clear();
+                                }
+                                _ => {
+                                    if let Err(e) = self.history_service.delete(&id) {
+                                        tracing::warn!("Failed to delete: {}", e);
+                                    }
+                                }
                             }
                             self.delete_confirm = None;
                             self.needs_refresh = true;
@@ -311,12 +361,13 @@ impl HistoryPanel {
 
         let mut toggle_id: Option<String> = None;
         let mut delete_id: Option<String> = None;
+        let mut load_entry: Option<LoadCodeBenchmarkRequest> = None;
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 egui::Grid::new("history_table")
-                    .num_columns(9)
+                    .num_columns(12)
                     .spacing([10.0, 6.0])
                     .striped(true)
                     .show(ui, |ui| {
@@ -324,30 +375,50 @@ impl HistoryPanel {
                         ui.label(egui::RichText::new("").strong());
                         ui.label(egui::RichText::new("Model").strong());
                         ui.label(egui::RichText::new("Type").strong());
+                        ui.label(egui::RichText::new("Params").strong());
                         ui.label(egui::RichText::new("Primary").strong());
                         ui.label(egui::RichText::new("Secondary").strong());
                         ui.label(egui::RichText::new("Tertiary").strong());
                         ui.label(egui::RichText::new("Detail").strong());
+                        ui.label(egui::RichText::new("Session").strong());
                         ui.label(egui::RichText::new("Date").strong());
-                        ui.label(egui::RichText::new("").strong());
+                        ui.label(egui::RichText::new("").strong()); // Load
+                        ui.label(egui::RichText::new("").strong()); // Delete
                         ui.end_row();
 
                         // Rows
                         for entry in &self.entries {
                             let entry_id = entry.id().to_string();
-                            let is_selected = self.selected_ids.contains(&entry_id);
-                            if ui.checkbox(&mut is_selected.clone(), "").clicked() {
+                            let mut is_selected = self.selected_ids.contains(&entry_id);
+                            if ui.checkbox(&mut is_selected, "").changed() {
                                 toggle_id = Some(entry_id.clone());
                             }
 
                             ui.label(entry.model_id());
                             ui.label(entry.benchmark_type().label());
+                            ui.label(entry.code_params());
                             // Show metric with label for clarity
                             ui.label(format!("{} {}", entry.metric_1(), entry.metric_1_label()));
                             ui.label(format!("{} {}", entry.metric_2(), entry.metric_2_label()));
                             ui.label(format!("{} {}", entry.metric_3(), entry.metric_3_label()));
                             ui.label(format!("{} {}", entry.metric_4(), entry.metric_4_label()));
+                            ui.label(entry.session_display());
                             ui.label(format_timestamp(entry.timestamp()));
+
+                            // Load button (only for Code entries)
+                            if let HistoryEntry::Code(code_entry) = entry {
+                                if ui.small_button("📋").on_hover_text("Load params").clicked() {
+                                    load_entry = Some(LoadCodeBenchmarkRequest {
+                                        model_id: code_entry.model_id.clone(),
+                                        language: code_entry.language,
+                                        temperature: code_entry.config.temperature,
+                                        max_tokens: code_entry.config.max_tokens,
+                                        problem_ids: code_entry.config.problem_ids.clone(),
+                                    });
+                                }
+                            } else {
+                                ui.label("");
+                            }
 
                             if ui.small_button("🗑").clicked() {
                                 delete_id = Some(entry_id);
@@ -359,7 +430,6 @@ impl HistoryPanel {
 
         // Handle toggle outside the borrow
         if let Some(id) = toggle_id {
-            // Toggle: remove if present, insert if not
             let was_present = self.selected_ids.remove(&id);
             if !was_present {
                 self.selected_ids.insert(id);
@@ -368,6 +438,10 @@ impl HistoryPanel {
 
         if let Some(id) = delete_id {
             self.delete_confirm = Some(id);
+        }
+
+        if load_entry.is_some() {
+            self.load_request = load_entry;
         }
     }
 

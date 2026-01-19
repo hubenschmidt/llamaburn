@@ -380,6 +380,24 @@ impl BenchmarkPanel {
         panel
     }
 
+    /// Set the benchmark type (Text, Audio, Code, etc.)
+    pub fn set_benchmark_type(&mut self, bt: BenchmarkType) {
+        self.benchmark_type = bt;
+    }
+
+    /// Load code benchmark params from history
+    pub fn load_code_from_history(
+        &mut self,
+        model_id: String,
+        language: llamaburn_core::Language,
+        temperature: f32,
+        max_tokens: Option<u32>,
+        problem_ids: Vec<String>,
+    ) {
+        self.benchmark_type = BenchmarkType::Code;
+        self.code_state.load_from_history(model_id, language, temperature, max_tokens, problem_ids);
+    }
+
     /// Check tool availability from cache, or return false if not yet checked
     fn is_effect_tool_available(&self, tool: EffectDetectionTool) -> bool {
         self.effect_tool_availability.get(&tool).copied().unwrap_or(false)
@@ -435,23 +453,25 @@ impl BenchmarkPanel {
         let Some(rx) = self.model_preload_rx.take() else { return };
 
         match rx.try_recv() {
-            Ok(result) => {
+            Ok(Ok(())) => {
                 self.model_preloading = false;
-                match result {
-                    Ok(()) => {
-                        self.live_output.push_str(&format!(
-                            "✅ {} loaded into VRAM\n",
-                            self.preloading_model_name
-                        ));
-                    }
-                    Err(e) => {
-                        self.live_output.push_str(&format!(
-                            "❌ Failed to load {}: {}\n",
-                            self.preloading_model_name, e
-                        ));
-                    }
-                }
+                self.live_output.push_str(&format!(
+                    "✅ {} loaded into VRAM\n",
+                    self.preloading_model_name
+                ));
                 self.preloading_model_name.clear();
+                // Auto-start benchmark for current combo
+                self.maybe_auto_start_combo();
+            }
+            Ok(Err(e)) => {
+                self.model_preloading = false;
+                self.live_output.push_str(&format!(
+                    "❌ Failed to load {}: {}\n",
+                    self.preloading_model_name, e
+                ));
+                self.preloading_model_name.clear();
+                // Skip to next combo on failure
+                self.maybe_skip_to_next_combo();
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 // Still loading, put receiver back
@@ -464,8 +484,22 @@ impl BenchmarkPanel {
                     self.preloading_model_name
                 ));
                 self.preloading_model_name.clear();
+                // Skip to next combo on disconnect
+                self.maybe_skip_to_next_combo();
             }
         }
+    }
+
+    fn maybe_auto_start_combo(&mut self) {
+        if self.code_state.current_combo.is_none() { return; }
+        if self.code_state.selected_problem_ids.is_empty() { return; }
+        self.run_current_combo();
+    }
+
+    fn maybe_skip_to_next_combo(&mut self) {
+        if self.code_state.combo_queue.is_empty() { return; }
+        self.code_state.queue_completed += 1;
+        self.advance_to_next_combo();
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {

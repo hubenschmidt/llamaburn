@@ -4,7 +4,8 @@ use eframe::egui;
 use llamaburn_services::HistoryService;
 
 use crate::panels::{
-    benchmark::BenchmarkPanel, gpu_monitor::GpuMonitorPanel, history::HistoryPanel,
+    benchmark::BenchmarkPanel, gpu_monitor::GpuMonitorPanel,
+    history::{HistoryPanel, LoadCodeBenchmarkRequest},
     setup::SetupPanel,
 };
 
@@ -110,6 +111,11 @@ impl LlamaBurnApp {
 
 impl eframe::App for LlamaBurnApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Check for load request from history panel
+        if let Some(req) = self.history.take_load_request() {
+            self.handle_load_request(req);
+        }
+
         egui::SidePanel::right("gpu_panel")
             .default_width(420.0)
             .show(ctx, |ui| {
@@ -133,5 +139,19 @@ impl eframe::App for LlamaBurnApp {
         });
 
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+}
+
+impl LlamaBurnApp {
+    fn handle_load_request(&mut self, req: LoadCodeBenchmarkRequest) {
+        // Switch to Benchmark tab and load params
+        self.current_tab = Tab::Benchmark;
+        self.benchmark.load_code_from_history(
+            req.model_id,
+            req.language,
+            req.temperature,
+            req.max_tokens,
+            req.problem_ids,
+        );
     }
 }

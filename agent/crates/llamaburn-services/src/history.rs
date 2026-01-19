@@ -63,6 +63,8 @@ pub struct CodeHistoryEntry {
     pub config: CodeBenchmarkConfig,
     pub summary: CodeBenchmarkSummary,
     pub metrics: Vec<CodeBenchmarkMetrics>,
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -467,8 +469,8 @@ impl HistoryService {
         let metrics_json = serde_json::to_string(&entry.metrics)?;
 
         conn.execute(
-            "INSERT INTO benchmark_history (id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO benchmark_history (id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json, session_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 entry.id,
                 entry.timestamp,
@@ -478,6 +480,7 @@ impl HistoryService {
                 config_json,
                 summary_json,
                 metrics_json,
+                entry.session_id,
             ],
         )?;
 
@@ -611,7 +614,7 @@ impl HistoryService {
         let type_str = serde_json::to_string(&BenchmarkType::Code)?;
 
         let mut sql = String::from(
-            "SELECT id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json
+            "SELECT id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json, session_id
              FROM benchmark_history WHERE benchmark_type = ?",
         );
 
@@ -632,12 +635,13 @@ impl HistoryService {
                 row.get::<_, String>(5)?,
                 row.get::<_, String>(6)?,
                 row.get::<_, String>(7)?,
+                row.get::<_, Option<String>>(8)?,
             ))
         })?;
 
         let mut entries = Vec::new();
         for row in rows {
-            let (id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json) = row?;
+            let (id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json, session_id) = row?;
             let Ok(language) = language.map(|s| serde_json::from_str(&s)).transpose() else {
                 continue;
             };
@@ -659,6 +663,7 @@ impl HistoryService {
                 config,
                 summary,
                 metrics,
+                session_id,
             });
         }
 

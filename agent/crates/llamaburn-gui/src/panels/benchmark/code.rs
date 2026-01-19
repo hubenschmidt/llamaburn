@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,18 +13,37 @@ use llamaburn_core::{
 };
 use llamaburn_services::CodeHistoryEntry;
 
-use super::components::render_model_selector;
 use super::BenchmarkPanel;
+
+/// Temperature bucket values
+pub const TEMPERATURE_BUCKETS: &[f32] = &[0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4];
+
+/// Max tokens bucket values
+pub const MAX_TOKENS_BUCKETS: &[u32] = &[512, 1024, 2048, 4096, 8192];
+
+/// A single benchmark configuration combination
+#[derive(Clone, Debug)]
+pub struct BenchmarkCombo {
+    pub model: String,
+    pub language: Language,
+    pub temperature: f32,
+    pub max_tokens: u32,
+}
 
 /// Code benchmark specific state
 #[derive(Default)]
 pub struct CodeBenchmarkState {
-    pub language: Language,
+    // Multi-select config fields
+    pub selected_models: Vec<String>,
+    pub selected_languages: Vec<Language>,
+    pub selected_temperatures: Vec<f32>,
+    pub custom_temperature: f32,  // For custom input field
+    pub selected_max_tokens: Vec<u32>,
+
+    // Problem selection
     pub problem_sets: Vec<ProblemSet>,
     pub selected_problem_set_idx: usize,
     pub selected_problem_ids: Vec<String>,
-    pub code_temperature: f32,
-    pub code_max_tokens: u32,
     pub auto_run_tests: bool,
 
     // Runtime state
@@ -39,18 +59,30 @@ pub struct CodeBenchmarkState {
     // Rankings
     pub code_leaderboard: Vec<(String, f64)>,
     pub last_language_for_rankings: Option<Language>,
+
+    // Combo queue for matrix execution
+    pub combo_queue: VecDeque<BenchmarkCombo>,
+    pub current_combo: Option<BenchmarkCombo>,
+    pub queue_total: usize,
+    pub queue_completed: usize,
+    pub batch_session_id: Option<String>,
 }
 
 impl CodeBenchmarkState {
     pub fn new() -> Self {
         Self {
-            language: Language::Python,
+            // Default selections: Python, temp 0.0, tokens 2048
+            selected_models: Vec::new(),
+            selected_languages: vec![Language::Python],
+            selected_temperatures: vec![0.0],
+            custom_temperature: 0.0,
+            selected_max_tokens: vec![2048],
+
             problem_sets: load_problem_sets_from_disk(),
             selected_problem_set_idx: 0,
             selected_problem_ids: Vec::new(),
-            code_temperature: 0.0,
-            code_max_tokens: 2048,
             auto_run_tests: true,
+
             code_running: false,
             code_rx: None,
             current_problem: None,
@@ -59,9 +91,45 @@ impl CodeBenchmarkState {
             code_metrics: Vec::new(),
             code_summary: None,
             code_output: String::new(),
+
             code_leaderboard: Vec::new(),
             last_language_for_rankings: None,
+
+            combo_queue: VecDeque::new(),
+            current_combo: None,
+            queue_total: 0,
+            queue_completed: 0,
+            batch_session_id: None,
         }
+    }
+
+    /// Generate all combinations from selected configs
+    pub fn generate_combinations(&self) -> Vec<BenchmarkCombo> {
+        let mut combos = Vec::new();
+        for model in &self.selected_models {
+            for lang in &self.selected_languages {
+                for temp in &self.selected_temperatures {
+                    for tokens in &self.selected_max_tokens {
+                        combos.push(BenchmarkCombo {
+                            model: model.clone(),
+                            language: *lang,
+                            temperature: *temp,
+                            max_tokens: *tokens,
+                        });
+                    }
+                }
+            }
+        }
+        combos
+    }
+
+    /// Calculate total number of combinations
+    pub fn combination_count(&self) -> usize {
+        let models = self.selected_models.len().max(1);
+        let langs = self.selected_languages.len().max(1);
+        let temps = self.selected_temperatures.len().max(1);
+        let tokens = self.selected_max_tokens.len().max(1);
+        models * langs * temps * tokens
     }
 
     pub fn current_problems(&self) -> &[CodeProblem] {
@@ -72,92 +140,188 @@ impl CodeBenchmarkState {
     }
 
     pub fn selected_problems(&self) -> Vec<&CodeProblem> {
-        self.current_problems()
+        // Search across ALL problem sets, not just current
+        self.problem_sets
             .iter()
+            .flat_map(|ps| ps.problems.iter())
             .filter(|p| self.selected_problem_ids.contains(&p.id))
             .collect()
     }
 
     pub fn find_problem_by_title(&self, title: &str) -> Option<&CodeProblem> {
-        self.current_problems().iter().find(|p| p.title == title)
+        self.problem_sets
+            .iter()
+            .flat_map(|ps| ps.problems.iter())
+            .find(|p| p.title == title)
     }
 
     pub fn find_problem_by_id(&self, id: &str) -> Option<&CodeProblem> {
-        self.current_problems().iter().find(|p| p.id == id)
+        self.problem_sets
+            .iter()
+            .flat_map(|ps| ps.problems.iter())
+            .find(|p| p.id == id)
+    }
+
+    /// Load params from a history entry
+    pub fn load_from_history(
+        &mut self,
+        model_id: String,
+        language: Language,
+        temperature: f32,
+        max_tokens: Option<u32>,
+        problem_ids: Vec<String>,
+    ) {
+        self.selected_models = vec![model_id];
+        self.selected_languages = vec![language];
+        self.selected_temperatures = vec![temperature];
+        self.selected_max_tokens = max_tokens.map(|t| vec![t]).unwrap_or_else(|| vec![2048]);
+        self.selected_problem_ids = problem_ids;
     }
 }
 
 impl BenchmarkPanel {
     pub fn render_code_config(&mut self, ui: &mut egui::Ui) {
         let disabled = self.code_state.code_running || self.loading_models;
+        let queue_running = !self.code_state.combo_queue.is_empty();
+        let interactive = !disabled && !queue_running;
 
-        egui::Grid::new("code_config_grid")
-            .num_columns(2)
-            .spacing([10.0, 8.0])
-            .show(ui, |ui| {
-                // Model selection
-                ui.label("Model:");
-                let resp = render_model_selector(
-                    ui,
-                    "code_model_select",
-                    &self.models,
-                    &self.selected_model,
-                    self.loading_models,
-                    self.model_preloading,
-                    disabled,
-                );
-                if let Some(model) = resp.selected {
-                    self.selected_model = model.clone();
-                    self.model_preload_rx = Some(self.ollama.preload_model_async(&model));
-                    self.model_preloading = true;
-                    self.preloading_model_name = model.clone();
-                    self.live_output.push_str(&format!("⏳ Loading {} into VRAM...\n", model));
+        // Models dropdown with multi-select
+        let models_label = format_selection_label(
+            "Models",
+            self.code_state.selected_models.len(),
+            self.models.len(),
+        );
+        let models_popup_id = ui.make_persistent_id("models_popup");
+        let models_btn = ui.add_enabled(interactive, egui::Button::new(&models_label).min_size(egui::vec2(290.0, 0.0)));
+        if models_btn.clicked() {
+            ui.memory_mut(|mem| mem.toggle_popup(models_popup_id));
+        }
+        egui::popup_below_widget(ui, models_popup_id, &models_btn, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+            ui.set_min_width(280.0);
+            ui.horizontal(|ui| {
+                if ui.small_button("All").clicked() {
+                    self.code_state.selected_models = self.models.clone();
                 }
-                if resp.unload_clicked {
-                    self.unload_model();
+                if ui.small_button("Clear").clicked() {
+                    self.code_state.selected_models.clear();
                 }
-                ui.end_row();
-
-                // Language selection
-                ui.label("Language:");
-                ui.horizontal(|ui| {
-                    ui.add_enabled_ui(!disabled, |ui| {
-                        egui::ComboBox::from_id_salt("language_select")
-                            .selected_text(self.code_state.language.label())
-                            .show_ui(ui, |ui| {
-                                for lang in Language::all() {
-                                    ui.selectable_value(
-                                        &mut self.code_state.language,
-                                        *lang,
-                                        lang.label(),
-                                    );
-                                }
-                            });
-                    });
-                });
-                ui.end_row();
-
-                // Temperature
-                ui.label("Temperature:");
-                ui.add_enabled(
-                    !disabled,
-                    egui::DragValue::new(&mut self.code_state.code_temperature)
-                        .range(0.0..=2.0)
-                        .speed(0.05),
-                );
-                ui.end_row();
-
-                // Max tokens
-                ui.label("Max Tokens:");
-                ui.add_enabled(
-                    !disabled,
-                    egui::DragValue::new(&mut self.code_state.code_max_tokens)
-                        .range(256..=8192),
-                );
-                ui.end_row();
             });
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .max_height(200.0)
+                .show(ui, |ui| {
+                    for model in &self.models.clone() {
+                        let mut selected = self.code_state.selected_models.contains(model);
+                        if ui.checkbox(&mut selected, model).changed() {
+                            toggle_selection(&mut self.code_state.selected_models, model.clone(), selected);
+                        }
+                    }
+                });
+        });
 
-        ui.add_space(10.0);
+        ui.add_space(3.0);
+
+        // Languages dropdown
+        let langs_label = format_selection_label(
+            "Languages",
+            self.code_state.selected_languages.len(),
+            Language::all().len(),
+        );
+        let langs_popup_id = ui.make_persistent_id("langs_popup");
+        let langs_btn = ui.add_enabled(interactive, egui::Button::new(&langs_label).min_size(egui::vec2(290.0, 0.0)));
+        if langs_btn.clicked() {
+            ui.memory_mut(|mem| mem.toggle_popup(langs_popup_id));
+        }
+        egui::popup_below_widget(ui, langs_popup_id, &langs_btn, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+            ui.set_min_width(200.0);
+            ui.horizontal(|ui| {
+                if ui.small_button("All").clicked() {
+                    self.code_state.selected_languages = Language::all().to_vec();
+                }
+                if ui.small_button("Clear").clicked() {
+                    self.code_state.selected_languages.clear();
+                }
+            });
+            ui.separator();
+            for lang in Language::all() {
+                let mut selected = self.code_state.selected_languages.contains(lang);
+                if ui.checkbox(&mut selected, lang.label()).changed() {
+                    toggle_selection(&mut self.code_state.selected_languages, *lang, selected);
+                }
+            }
+        });
+
+        ui.add_space(3.0);
+
+        // Temperature dropdown with custom input
+        let temp_label = format_temp_label(&self.code_state.selected_temperatures);
+        let temp_popup_id = ui.make_persistent_id("temp_popup");
+        let temp_btn = ui.add_enabled(interactive, egui::Button::new(&temp_label).min_size(egui::vec2(290.0, 0.0)));
+        if temp_btn.clicked() {
+            ui.memory_mut(|mem| mem.toggle_popup(temp_popup_id));
+        }
+        egui::popup_below_widget(ui, temp_popup_id, &temp_btn, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+            ui.set_min_width(220.0);
+            ui.horizontal(|ui| {
+                if ui.small_button("All").clicked() {
+                    self.code_state.selected_temperatures = TEMPERATURE_BUCKETS.to_vec();
+                }
+                if ui.small_button("Clear").clicked() {
+                    self.code_state.selected_temperatures.clear();
+                }
+            });
+            ui.separator();
+            for temp in TEMPERATURE_BUCKETS {
+                let mut selected = self.code_state.selected_temperatures.contains(temp);
+                if ui.checkbox(&mut selected, format!("{:.1}", temp)).changed() {
+                    toggle_selection(&mut self.code_state.selected_temperatures, *temp, selected);
+                }
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("Custom:");
+                ui.add(egui::DragValue::new(&mut self.code_state.custom_temperature)
+                    .range(0.0..=2.0)
+                    .speed(0.05));
+                if ui.small_button("Add").clicked() {
+                    let val = self.code_state.custom_temperature;
+                    if !self.code_state.selected_temperatures.contains(&val) {
+                        self.code_state.selected_temperatures.push(val);
+                        self.code_state.selected_temperatures.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    }
+                }
+            });
+        });
+
+        ui.add_space(3.0);
+
+        // Max tokens dropdown
+        let tokens_label = format_tokens_label(&self.code_state.selected_max_tokens);
+        let tokens_popup_id = ui.make_persistent_id("tokens_popup");
+        let tokens_btn = ui.add_enabled(interactive, egui::Button::new(&tokens_label).min_size(egui::vec2(290.0, 0.0)));
+        if tokens_btn.clicked() {
+            ui.memory_mut(|mem| mem.toggle_popup(tokens_popup_id));
+        }
+        egui::popup_below_widget(ui, tokens_popup_id, &tokens_btn, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+            ui.set_min_width(180.0);
+            ui.horizontal(|ui| {
+                if ui.small_button("All").clicked() {
+                    self.code_state.selected_max_tokens = MAX_TOKENS_BUCKETS.to_vec();
+                }
+                if ui.small_button("Clear").clicked() {
+                    self.code_state.selected_max_tokens.clear();
+                }
+            });
+            ui.separator();
+            for tokens in MAX_TOKENS_BUCKETS {
+                let mut selected = self.code_state.selected_max_tokens.contains(tokens);
+                if ui.checkbox(&mut selected, format!("{}", tokens)).changed() {
+                    toggle_selection(&mut self.code_state.selected_max_tokens, *tokens, selected);
+                }
+            }
+        });
+
+        ui.add_space(8.0);
         ui.separator();
         ui.add_space(5.0);
 
@@ -179,11 +343,39 @@ impl BenchmarkPanel {
                                 &ps.name,
                             ).clicked() {
                                 self.code_state.selected_problem_set_idx = idx;
-                                self.code_state.selected_problem_ids.clear();
+                                // Don't clear selections - preserve across set switches
                             }
                         }
                     });
             });
+        });
+
+        // Problem selection buttons
+        let current_set_ids: Vec<String> = self.code_state.current_problems()
+            .iter()
+            .map(|p| p.id.clone())
+            .collect();
+        let total_problems: usize = self.code_state.problem_sets
+            .iter()
+            .map(|ps| ps.problems.len())
+            .sum();
+        ui.horizontal(|ui| {
+            if ui.add_enabled(!disabled, egui::Button::new("Select All (Set)")).clicked() {
+                // Add current set's problems to selection (don't replace)
+                for id in current_set_ids {
+                    if !self.code_state.selected_problem_ids.contains(&id) {
+                        self.code_state.selected_problem_ids.push(id);
+                    }
+                }
+            }
+            if ui.add_enabled(!disabled, egui::Button::new("Clear All")).clicked() {
+                self.code_state.selected_problem_ids.clear();
+            }
+            ui.label(format!(
+                "{}/{} total",
+                self.code_state.selected_problem_ids.len(),
+                total_problems
+            ));
         });
         ui.add_space(5.0);
 
@@ -220,40 +412,52 @@ impl BenchmarkPanel {
         ui.add_space(10.0);
 
         // Run button and options
-        let can_run = !self.code_state.code_running
-            && !self.selected_model.is_empty()
-            && !self.code_state.selected_problem_ids.is_empty();
-
-        let can_run_all = !self.code_state.code_running
-            && !self.selected_model.is_empty()
-            && !self.code_state.problem_sets.is_empty();
-
-        let total_problems: usize = self.code_state.problem_sets.iter().map(|ps| ps.problems.len()).sum();
-
         ui.horizontal(|ui| {
-            if self.code_state.code_running {
+            // Show cancel and progress during run or queue
+            if self.code_state.code_running || queue_running {
                 if ui.button("Cancel").clicked() {
-                    self.cancel_code_benchmark();
+                    self.cancel_matrix_benchmark();
                 }
                 ui.spinner();
-                ui.label(&self.progress);
-            } else {
-                if ui.add_enabled(can_run, egui::Button::new("Run Selected")).clicked() {
-                    self.start_code_benchmark();
+                if let Some(combo) = &self.code_state.current_combo {
+                    ui.label(format!(
+                        "{}/{}: {} | {} | T={:.1} | {}tok",
+                        self.code_state.queue_completed + 1,
+                        self.code_state.queue_total,
+                        combo.model,
+                        combo.language.label(),
+                        combo.temperature,
+                        combo.max_tokens
+                    ));
+                } else {
+                    ui.label(&self.progress);
                 }
-                if ui.add_enabled(can_run_all, egui::Button::new("Run All")).clicked() {
-                    self.start_all_code_benchmark();
-                }
-                ui.checkbox(&mut self.code_state.auto_run_tests, "Run Tests");
+                return;
             }
 
-            if !disabled {
-                ui.label(format!(
-                    "{} selected / {} total",
-                    self.code_state.selected_problem_ids.len(),
-                    total_problems
-                ));
+            // Calculate combinations
+            let combo_count = self.code_state.combination_count();
+            let has_selections = !self.code_state.selected_models.is_empty()
+                && !self.code_state.selected_languages.is_empty()
+                && !self.code_state.selected_temperatures.is_empty()
+                && !self.code_state.selected_max_tokens.is_empty()
+                && !self.code_state.selected_problem_ids.is_empty();
+
+            // Build descriptive label
+            let button_label = format!(
+                "Run {} combo{} ({} × {} × {} × {})",
+                combo_count,
+                if combo_count == 1 { "" } else { "s" },
+                self.code_state.selected_models.len(),
+                self.code_state.selected_languages.len(),
+                self.code_state.selected_temperatures.len(),
+                self.code_state.selected_max_tokens.len()
+            );
+
+            if ui.add_enabled(has_selections, egui::Button::new(button_label)).clicked() {
+                self.start_matrix_benchmark();
             }
+            ui.checkbox(&mut self.code_state.auto_run_tests, "Run Tests");
         });
     }
 
@@ -310,62 +514,13 @@ impl BenchmarkPanel {
         }
     }
 
-    pub fn start_code_benchmark(&mut self) {
-        let problems: Vec<CodeProblem> = self
-            .code_state
-            .selected_problems()
-            .into_iter()
-            .cloned()
-            .collect();
-
-        if problems.is_empty() {
-            self.error = Some("No problems selected".to_string());
-            return;
-        }
-
-        self.run_code_benchmark_with_problems(problems);
-    }
-
-    pub fn start_all_code_benchmark(&mut self) {
-        // Collect all problems from all problem sets, sorted by difficulty
-        let mut problems: Vec<CodeProblem> = self
-            .code_state
-            .problem_sets
-            .iter()
-            .flat_map(|ps| ps.problems.clone())
-            .collect();
-
-        if problems.is_empty() {
-            self.error = Some("No problems available".to_string());
-            return;
-        }
-
-        // Sort by difficulty: Easy (0) -> Medium (1) -> Hard (2)
-        problems.sort_by_key(|p| match p.difficulty {
-            Difficulty::Easy => 0,
-            Difficulty::Medium => 1,
-            Difficulty::Hard => 2,
-        });
-
-        let easy_count = problems.iter().filter(|p| p.difficulty == Difficulty::Easy).count();
-        let medium_count = problems.iter().filter(|p| p.difficulty == Difficulty::Medium).count();
-        let hard_count = problems.iter().filter(|p| p.difficulty == Difficulty::Hard).count();
-
-        self.live_output.push_str(&format!(
-            "=== Running ALL {} problems ===\n  Easy: {}  |  Medium: {}  |  Hard: {}\n\n",
-            problems.len(), easy_count, medium_count, hard_count
-        ));
-
-        self.run_code_benchmark_with_problems(problems);
-    }
-
-    fn run_code_benchmark_with_problems(&mut self, problems: Vec<CodeProblem>) {
+    fn run_code_benchmark_with_combo(&mut self, combo: BenchmarkCombo, problems: Vec<CodeProblem>) {
         let config = CodeBenchmarkConfig {
-            model_id: self.selected_model.clone(),
-            language: self.code_state.language,
+            model_id: combo.model.clone(),
+            language: combo.language,
             problem_ids: problems.iter().map(|p| p.id.clone()).collect(),
-            temperature: self.code_state.code_temperature,
-            max_tokens: Some(self.code_state.code_max_tokens),
+            temperature: combo.temperature,
+            max_tokens: Some(combo.max_tokens),
             warmup_runs: self.warmup,
             run_tests: self.code_state.auto_run_tests,
         };
@@ -410,6 +565,98 @@ impl BenchmarkPanel {
             token.cancel();
         }
         self.code_state.code_running = false;
+    }
+
+    /// Start matrix benchmark: queue all combinations
+    fn start_matrix_benchmark(&mut self) {
+        let combos = self.code_state.generate_combinations();
+        self.code_state.combo_queue = combos.into();
+        self.code_state.queue_total = self.code_state.combo_queue.len();
+        self.code_state.queue_completed = 0;
+        self.code_state.batch_session_id = Some(uuid::Uuid::new_v4().to_string());
+
+        self.live_output.push_str(&format!(
+            "\n=== Matrix Benchmark: {} combinations ===\n",
+            self.code_state.queue_total
+        ));
+
+        self.advance_to_next_combo();
+    }
+
+    /// Advance to next combo in queue, starting preload if model changed
+    pub(super) fn advance_to_next_combo(&mut self) {
+        let Some(combo) = self.code_state.combo_queue.pop_front() else {
+            // Queue complete
+            self.live_output.push_str("\n=== All Combinations Complete ===\n");
+            self.code_state.current_combo = None;
+            self.code_state.queue_total = 0;
+            self.code_state.queue_completed = 0;
+            self.code_state.batch_session_id = None;
+            return;
+        };
+
+        // Check if model changed from previous combo
+        let model_changed = self.code_state.current_combo
+            .as_ref()
+            .map(|c| c.model != combo.model)
+            .unwrap_or(true);
+
+        self.code_state.current_combo = Some(combo.clone());
+        self.selected_model = combo.model.clone();
+
+        self.live_output.push_str(&format!(
+            "\n--- Combo {}/{}: {} | {} | T={:.1} | {}tok ---\n",
+            self.code_state.queue_completed + 1,
+            self.code_state.queue_total,
+            combo.model,
+            combo.language.label(),
+            combo.temperature,
+            combo.max_tokens
+        ));
+
+        if model_changed {
+            // Start preloading the model
+            self.model_preload_rx = Some(self.ollama.preload_model_async(&combo.model));
+            self.model_preloading = true;
+            self.preloading_model_name = combo.model.clone();
+            self.live_output.push_str(&format!("⏳ Loading {} into VRAM...\n", combo.model));
+            return;
+        }
+
+        // Same model, start benchmark directly
+        self.run_current_combo();
+    }
+
+    /// Run benchmark for current combo
+    pub(super) fn run_current_combo(&mut self) {
+        let Some(combo) = self.code_state.current_combo.clone() else {
+            return;
+        };
+
+        let problems: Vec<CodeProblem> = self
+            .code_state
+            .selected_problems()
+            .into_iter()
+            .cloned()
+            .collect();
+
+        if problems.is_empty() {
+            self.error = Some("No problems selected".to_string());
+            return;
+        }
+
+        self.run_code_benchmark_with_combo(combo, problems);
+    }
+
+    /// Cancel matrix benchmark and clear queue
+    fn cancel_matrix_benchmark(&mut self) {
+        self.cancel_code_benchmark();
+        self.code_state.combo_queue.clear();
+        self.code_state.current_combo = None;
+        self.code_state.queue_total = 0;
+        self.code_state.queue_completed = 0;
+        self.code_state.batch_session_id = None;
+        self.live_output.push_str("\n=== Matrix Benchmark Cancelled ===\n");
     }
 
     pub fn poll_code_benchmark(&mut self) {
@@ -474,6 +721,12 @@ impl BenchmarkPanel {
                         summary.problems_total
                     ));
                     should_clear = true;
+
+                    // Advance to next combo in queue
+                    if !self.code_state.combo_queue.is_empty() {
+                        self.code_state.queue_completed += 1;
+                        self.advance_to_next_combo();
+                    }
                 }
                 CodeBenchmarkEvent::Cancelled => {
                     self.code_state.code_running = false;
@@ -495,23 +748,27 @@ impl BenchmarkPanel {
     }
 
     fn save_code_to_history(&self, summary: &CodeBenchmarkSummary) {
-        let model_id = self.selected_model.clone();
+        let Some(combo) = &self.code_state.current_combo else {
+            warn!("No current combo to save to history");
+            return;
+        };
+
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
         let config = CodeBenchmarkConfig {
-            model_id: model_id.clone(),
-            language: self.code_state.language,
+            model_id: combo.model.clone(),
+            language: combo.language,
             problem_ids: self
                 .code_state
                 .code_metrics
                 .iter()
                 .map(|m| m.problem_id.clone())
                 .collect(),
-            temperature: self.code_state.code_temperature,
-            max_tokens: Some(self.code_state.code_max_tokens),
+            temperature: combo.temperature,
+            max_tokens: Some(combo.max_tokens),
             warmup_runs: self.warmup,
             run_tests: self.code_state.auto_run_tests,
         };
@@ -520,17 +777,17 @@ impl BenchmarkPanel {
             id: uuid::Uuid::new_v4().to_string(),
             timestamp,
             benchmark_type: BenchmarkType::Code,
-            model_id,
-            language: self.code_state.language,
+            model_id: combo.model.clone(),
+            language: combo.language,
             config,
             summary: summary.clone(),
             metrics: self.code_state.code_metrics.clone(),
+            session_id: self.code_state.batch_session_id.clone(),
         };
 
-        if let Err(e) = self.history_service.insert_code(&entry) {
-            warn!("Failed to save code benchmark history: {}", e);
-        } else {
-            info!("Saved code benchmark result to history: {}", entry.id);
+        match self.history_service.insert_code(&entry) {
+            Ok(()) => info!("Saved code benchmark result to history: {}", entry.id),
+            Err(e) => warn!("Failed to save code benchmark history: {}", e),
         }
     }
 
@@ -539,7 +796,10 @@ impl BenchmarkPanel {
             return;
         }
 
-        let lang = self.code_state.language;
+        let Some(lang) = self.code_state.selected_languages.first().copied() else {
+            return;
+        };
+
         if self.code_state.last_language_for_rankings == Some(lang) {
             return;
         }
@@ -553,9 +813,11 @@ impl BenchmarkPanel {
 
     fn force_refresh_code_rankings(&mut self) {
         self.code_state.last_language_for_rankings = None;
+        let lang = self.code_state.selected_languages.first().copied()
+            .unwrap_or(Language::Python);
         self.code_state.code_leaderboard = self
             .history_service
-            .get_code_leaderboard(self.code_state.language, 5)
+            .get_code_leaderboard(lang, 5)
             .unwrap_or_default();
     }
 }
@@ -587,4 +849,45 @@ fn find_problems_dir() -> Option<PathBuf> {
     let exe_path = std::env::current_exe().ok()?;
     let from_exe = exe_path.parent()?.join("problems");
     from_exe.is_dir().then_some(from_exe)
+}
+
+/// Toggle an item in/out of a selection vec
+fn toggle_selection<T: Clone + PartialEq>(vec: &mut Vec<T>, item: T, selected: bool) {
+    if selected && !vec.contains(&item) {
+        vec.push(item);
+        return;
+    }
+    if !selected {
+        vec.retain(|x| x != &item);
+    }
+}
+
+/// Format dropdown label showing selection count
+fn format_selection_label(name: &str, selected: usize, total: usize) -> String {
+    match selected {
+        0 => format!("{}: None", name),
+        n if n == total => format!("{}: All ({})", name, total),
+        1 => format!("{}: 1 selected", name),
+        n => format!("{}: {} selected", name, n),
+    }
+}
+
+/// Format temperature dropdown label
+fn format_temp_label(temps: &[f32]) -> String {
+    match temps.len() {
+        0 => "Temp: None".to_string(),
+        1 => format!("Temp: {:.1}", temps[0]),
+        n if n == TEMPERATURE_BUCKETS.len() => format!("Temp: All ({})", n),
+        n => format!("Temp: {} values", n),
+    }
+}
+
+/// Format max tokens dropdown label
+fn format_tokens_label(tokens: &[u32]) -> String {
+    match tokens.len() {
+        0 => "Tokens: None".to_string(),
+        1 => format!("Tokens: {}", tokens[0]),
+        n if n == MAX_TOKENS_BUCKETS.len() => format!("Tokens: All ({})", n),
+        n => format!("Tokens: {} values", n),
+    }
 }
