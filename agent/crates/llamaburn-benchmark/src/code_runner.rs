@@ -96,13 +96,30 @@ impl CodeBenchmarkRunner {
                 .await
             {
                 Ok(m) => m,
+                Err(LlamaBurnError::Cancelled) => {
+                    let _ = tx.send(CodeBenchmarkEvent::Cancelled).await;
+                    return;
+                }
                 Err(e) => {
+                    // Log error and skip to next problem
                     let _ = tx
                         .send(CodeBenchmarkEvent::Error {
-                            message: e.to_string(),
+                            message: format!("Problem '{}' failed: {}", problem.title, e),
                         })
                         .await;
-                    return;
+                    // Create failed metrics for this problem
+                    CodeBenchmarkMetrics {
+                        problem_id: problem.id.clone(),
+                        difficulty: problem.difficulty,
+                        ttft_ms: 0.0,
+                        tokens_per_sec: 0.0,
+                        tests_passed: 0,
+                        tests_total: problem.test_cases.len() as u32,
+                        execution_time_ms: 0.0,
+                        generated_code: String::new(),
+                        compilation_error: Some(e.to_string()),
+                        runtime_error: None,
+                    }
                 }
             };
 

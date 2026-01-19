@@ -109,6 +109,20 @@ Benchmark LLM code generation capabilities with automatic test execution.
 | Metrics Collection | ✅ Implemented | TTFT, TPS, pass rate |
 | LLM-as-Judge | 🔄 Planned | Evaluate code quality with rubric |
 
+### Matrix Benchmarks
+
+Run benchmarks across multiple models, languages, temperatures, and token limits:
+
+| Feature | Description |
+|---------|-------------|
+| **Multi-Model** | Select multiple Ollama models to compare |
+| **Multi-Language** | Test Python, JavaScript, Rust, Go simultaneously |
+| **Parameter Sweep** | Grid search over temperature and max tokens |
+| **Pause/Resume** | Pause long sessions, resume later (survives restarts) |
+| **Skip on Error** | Continue to next combination on failure (for unattended runs) |
+| **Auto-Pause** | Pauses automatically on unrecoverable errors |
+| **Export** | Export live output (.txt) and history (.csv) |
+
 ### Problem Sets
 
 Algorithmic problems included across three difficulty levels (easy, medium hard).

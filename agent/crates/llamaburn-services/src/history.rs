@@ -76,6 +76,64 @@ pub struct EffectDetectionHistoryEntry {
     pub created_at: i64,
 }
 
+/// Status of a batch benchmark run
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BatchStatus {
+    Running,
+    Paused,
+    Completed,
+}
+
+impl BatchStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BatchStatus::Running => "running",
+            BatchStatus::Paused => "paused",
+            BatchStatus::Completed => "completed",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "running" => BatchStatus::Running,
+            "paused" => BatchStatus::Paused,
+            "completed" => BatchStatus::Completed,
+            _ => BatchStatus::Paused,
+        }
+    }
+}
+
+/// A single benchmark combination in a matrix run
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchCombo {
+    pub model: String,
+    pub language: Language,
+    pub temperature: f32,
+    pub max_tokens: u32,
+}
+
+/// Persisted state for a resumable batch benchmark session
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchState {
+    pub session_id: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub status: BatchStatus,
+    pub selected_models: Vec<String>,
+    pub selected_languages: Vec<Language>,
+    pub selected_temperatures: Vec<f32>,
+    pub selected_max_tokens: Vec<u32>,
+    pub selected_problem_ids: Vec<String>,
+    pub auto_run_tests: bool,
+    pub skip_on_error: bool,
+    pub pending_combos: Vec<BatchCombo>,
+    pub queue_total: usize,
+    pub queue_completed: usize,
+    pub failed_combo: Option<BatchCombo>,
+    pub error_message: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct HistoryFilter {
     pub model_id: Option<String>,
@@ -810,6 +868,151 @@ impl HistoryService {
 
         Ok(results)
     }
+
+    // ========== Batch State Methods ==========
+
+    /// Insert a new batch state
+    pub fn insert_batch(&self, batch: &BatchState) -> Result<()> {
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
+        conn.execute(
+            "INSERT INTO batch_state (
+                session_id, created_at, updated_at, status,
+                selected_models, selected_languages, selected_temperatures,
+                selected_max_tokens, selected_problem_ids,
+                auto_run_tests, skip_on_error,
+                pending_combos, queue_total, queue_completed,
+                failed_combo, error_message
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                batch.session_id,
+                batch.created_at,
+                batch.updated_at,
+                batch.status.as_str(),
+                serde_json::to_string(&batch.selected_models)?,
+                serde_json::to_string(&batch.selected_languages)?,
+                serde_json::to_string(&batch.selected_temperatures)?,
+                serde_json::to_string(&batch.selected_max_tokens)?,
+                serde_json::to_string(&batch.selected_problem_ids)?,
+                batch.auto_run_tests as i32,
+                batch.skip_on_error as i32,
+                serde_json::to_string(&batch.pending_combos)?,
+                batch.queue_total as i64,
+                batch.queue_completed as i64,
+                batch.failed_combo.as_ref().map(|c| serde_json::to_string(c)).transpose()?,
+                batch.error_message.as_ref(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Update an existing batch state
+    pub fn update_batch(&self, batch: &BatchState) -> Result<()> {
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
+        conn.execute(
+            "UPDATE batch_state SET
+                updated_at = ?2, status = ?3,
+                pending_combos = ?4, queue_completed = ?5,
+                failed_combo = ?6, error_message = ?7
+            WHERE session_id = ?1",
+            params![
+                batch.session_id,
+                batch.updated_at,
+                batch.status.as_str(),
+                serde_json::to_string(&batch.pending_combos)?,
+                batch.queue_completed as i64,
+                batch.failed_combo.as_ref().map(|c| serde_json::to_string(c)).transpose()?,
+                batch.error_message.as_ref(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get all incomplete batches (running or paused)
+    pub fn get_incomplete_batches(&self) -> Result<Vec<BatchState>> {
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
+        let mut stmt = conn.prepare(
+            "SELECT session_id, created_at, updated_at, status,
+                    selected_models, selected_languages, selected_temperatures,
+                    selected_max_tokens, selected_problem_ids,
+                    auto_run_tests, skip_on_error,
+                    pending_combos, queue_total, queue_completed,
+                    failed_combo, error_message
+             FROM batch_state
+             WHERE status IN ('running', 'paused')
+             ORDER BY updated_at DESC"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok(BatchStateRow {
+                session_id: row.get(0)?,
+                created_at: row.get(1)?,
+                updated_at: row.get(2)?,
+                status: row.get(3)?,
+                selected_models: row.get(4)?,
+                selected_languages: row.get(5)?,
+                selected_temperatures: row.get(6)?,
+                selected_max_tokens: row.get(7)?,
+                selected_problem_ids: row.get(8)?,
+                auto_run_tests: row.get(9)?,
+                skip_on_error: row.get(10)?,
+                pending_combos: row.get(11)?,
+                queue_total: row.get(12)?,
+                queue_completed: row.get(13)?,
+                failed_combo: row.get(14)?,
+                error_message: row.get(15)?,
+            })
+        })?;
+
+        let mut batches = Vec::new();
+        for row in rows {
+            let row = row?;
+            batches.push(BatchState {
+                session_id: row.session_id,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+                status: BatchStatus::from_str(&row.status),
+                selected_models: serde_json::from_str(&row.selected_models)?,
+                selected_languages: serde_json::from_str(&row.selected_languages)?,
+                selected_temperatures: serde_json::from_str(&row.selected_temperatures)?,
+                selected_max_tokens: serde_json::from_str(&row.selected_max_tokens)?,
+                selected_problem_ids: serde_json::from_str(&row.selected_problem_ids)?,
+                auto_run_tests: row.auto_run_tests != 0,
+                skip_on_error: row.skip_on_error != 0,
+                pending_combos: serde_json::from_str(&row.pending_combos)?,
+                queue_total: row.queue_total as usize,
+                queue_completed: row.queue_completed as usize,
+                failed_combo: row.failed_combo.map(|s| serde_json::from_str(&s)).transpose()?,
+                error_message: row.error_message,
+            });
+        }
+        Ok(batches)
+    }
+
+    /// Delete a batch state
+    pub fn delete_batch(&self, session_id: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
+        conn.execute("DELETE FROM batch_state WHERE session_id = ?1", params![session_id])?;
+        Ok(())
+    }
+}
+
+struct BatchStateRow {
+    session_id: String,
+    created_at: i64,
+    updated_at: i64,
+    status: String,
+    selected_models: String,
+    selected_languages: String,
+    selected_temperatures: String,
+    selected_max_tokens: String,
+    selected_problem_ids: String,
+    auto_run_tests: i32,
+    skip_on_error: i32,
+    pending_combos: String,
+    queue_total: i64,
+    queue_completed: i64,
+    failed_combo: Option<String>,
+    error_message: Option<String>,
 }
 
 struct RowData {

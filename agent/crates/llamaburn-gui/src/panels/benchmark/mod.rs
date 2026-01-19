@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use eframe::egui;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 
 use llamaburn_core::{
     AudioBenchmarkResult, BenchmarkConfig, BenchmarkMetrics, BenchmarkType,
@@ -376,6 +376,16 @@ impl BenchmarkPanel {
 
         // Start async tool availability check on startup
         panel.refresh_effect_tool_availability();
+
+        // Check for incomplete batch sessions on startup
+        panel.code_state.pending_resume_batches = panel
+            .history_service
+            .get_incomplete_batches()
+            .unwrap_or_else(|e| {
+                warn!("Failed to load incomplete batches: {}", e);
+                vec![]
+            });
+
         panel
     }
 

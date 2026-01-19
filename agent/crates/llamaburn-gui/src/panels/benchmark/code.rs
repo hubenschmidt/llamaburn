@@ -11,7 +11,7 @@ use llamaburn_core::{
     BenchmarkType, CodeBenchmarkConfig, CodeBenchmarkMetrics, CodeBenchmarkSummary, CodeProblem,
     Difficulty, Language, ProblemSet,
 };
-use llamaburn_services::CodeHistoryEntry;
+use llamaburn_services::{BatchCombo, BatchState, BatchStatus, CodeHistoryEntry};
 
 use super::BenchmarkPanel;
 
@@ -45,6 +45,10 @@ pub struct CodeBenchmarkState {
     pub selected_problem_set_idx: usize,
     pub selected_problem_ids: Vec<String>,
     pub auto_run_tests: bool,
+    pub skip_on_error: bool,
+
+    // Resume state
+    pub pending_resume_batches: Vec<BatchState>,
 
     // Runtime state
     pub code_running: bool,
@@ -82,6 +86,9 @@ impl CodeBenchmarkState {
             selected_problem_set_idx: 0,
             selected_problem_ids: Vec::new(),
             auto_run_tests: true,
+            skip_on_error: false,
+
+            pending_resume_batches: Vec::new(),
 
             code_running: false,
             code_rx: None,
@@ -177,13 +184,231 @@ impl CodeBenchmarkState {
         self.selected_max_tokens = max_tokens.map(|t| vec![t]).unwrap_or_else(|| vec![2048]);
         self.selected_problem_ids = problem_ids;
     }
+
+    /// Create BatchState from current state for persistence
+    pub fn to_batch_state(&self) -> Option<BatchState> {
+        let session_id = self.batch_session_id.clone()?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        // Include current_combo at front (it was popped from queue)
+        let mut pending: Vec<BatchCombo> = self.current_combo.iter()
+            .map(|c| BatchCombo {
+                model: c.model.clone(),
+                language: c.language,
+                temperature: c.temperature,
+                max_tokens: c.max_tokens,
+            })
+            .collect();
+        pending.extend(self.combo_queue.iter().map(|c| BatchCombo {
+            model: c.model.clone(),
+            language: c.language,
+            temperature: c.temperature,
+            max_tokens: c.max_tokens,
+        }));
+
+        Some(BatchState {
+            session_id,
+            created_at: now,
+            updated_at: now,
+            status: BatchStatus::Running,
+            selected_models: self.selected_models.clone(),
+            selected_languages: self.selected_languages.clone(),
+            selected_temperatures: self.selected_temperatures.clone(),
+            selected_max_tokens: self.selected_max_tokens.clone(),
+            selected_problem_ids: self.selected_problem_ids.clone(),
+            auto_run_tests: self.auto_run_tests,
+            skip_on_error: self.skip_on_error,
+            pending_combos: pending,
+            queue_total: self.queue_total,
+            queue_completed: self.queue_completed,
+            failed_combo: None,
+            error_message: None,
+        })
+    }
+
+    /// Restore state from a BatchState
+    pub fn restore_from_batch(&mut self, batch: &BatchState) {
+        self.selected_models = batch.selected_models.clone();
+        self.selected_languages = batch.selected_languages.clone();
+        self.selected_temperatures = batch.selected_temperatures.clone();
+        self.selected_max_tokens = batch.selected_max_tokens.clone();
+        self.selected_problem_ids = batch.selected_problem_ids.clone();
+        self.auto_run_tests = batch.auto_run_tests;
+        self.skip_on_error = batch.skip_on_error;
+        self.combo_queue = batch.pending_combos.iter().map(|c| BenchmarkCombo {
+            model: c.model.clone(),
+            language: c.language,
+            temperature: c.temperature,
+            max_tokens: c.max_tokens,
+        }).collect();
+        self.queue_total = batch.queue_total;
+        self.queue_completed = batch.queue_completed;
+        self.batch_session_id = Some(batch.session_id.clone());
+    }
 }
 
 impl BenchmarkPanel {
+    /// Render banner for incomplete/paused batch sessions
+    fn render_incomplete_sessions_banner(&mut self, ui: &mut egui::Ui, interactive: bool) {
+        if self.code_state.pending_resume_batches.is_empty() {
+            return;
+        }
+
+        let batches = self.code_state.pending_resume_batches.clone();
+        let mut resume_idx: Option<usize> = None;
+        let mut discard_idx: Option<usize> = None;
+
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::vec2(8.0, 6.0))
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new(format!("Incomplete Sessions ({})", batches.len())).strong());
+                ui.add_space(4.0);
+
+                for (idx, batch) in batches.iter().enumerate() {
+                    ui.separator();
+                    ui.add_space(2.0);
+
+                    // Status and progress line
+                    let status_text = match batch.status {
+                        BatchStatus::Paused => "Paused",
+                        BatchStatus::Running => "Interrupted",
+                        BatchStatus::Completed => "Completed",
+                    };
+                    let progress_text = format!(
+                        "{} - {}/{} complete",
+                        status_text, batch.queue_completed, batch.queue_total
+                    );
+                    ui.label(progress_text);
+
+                    // Configuration summary
+                    let config_text = format!(
+                        "{} models x {} langs x {} temps x {} tokens",
+                        batch.selected_models.len(),
+                        batch.selected_languages.len(),
+                        batch.selected_temperatures.len(),
+                        batch.selected_max_tokens.len(),
+                    );
+                    ui.label(egui::RichText::new(config_text).small().weak());
+
+                    // Error info if present
+                    if let Some(ref error) = batch.error_message {
+                        ui.label(egui::RichText::new(format!("Error: {}", error)).small().color(egui::Color32::RED));
+                    }
+
+                    // Action buttons
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(interactive, egui::Button::new("Resume")).clicked() {
+                            resume_idx = Some(idx);
+                        }
+                        if ui.add_enabled(interactive, egui::Button::new("Discard")).clicked() {
+                            discard_idx = Some(idx);
+                        }
+                    });
+                }
+            });
+
+        ui.add_space(8.0);
+
+        // Handle resume action
+        if let Some(idx) = resume_idx {
+            self.resume_batch(idx);
+        }
+
+        // Handle discard action
+        if let Some(idx) = discard_idx {
+            self.discard_batch(idx);
+        }
+    }
+
+    /// Resume a paused/incomplete batch session
+    fn resume_batch(&mut self, idx: usize) {
+        let Some(batch) = self.code_state.pending_resume_batches.get(idx).cloned() else {
+            return;
+        };
+
+        // Restore state from batch
+        self.code_state.restore_from_batch(&batch);
+
+        // Update status to Running in database
+        let mut updated_batch = batch.clone();
+        updated_batch.status = BatchStatus::Running;
+        updated_batch.updated_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        updated_batch.error_message = None;
+        updated_batch.failed_combo = None;
+
+        if let Err(e) = self.history_service.update_batch(&updated_batch) {
+            warn!("Failed to update batch status to running: {}", e);
+        }
+
+        // Remove from pending list
+        self.code_state.pending_resume_batches.remove(idx);
+
+        // Start execution
+        self.live_output.push_str(&format!(
+            "=== Resuming Batch {} ===\n{}/{} combinations remaining\n",
+            batch.session_id,
+            batch.queue_total - batch.queue_completed,
+            batch.queue_total
+        ));
+        self.advance_to_next_combo();
+    }
+
+    /// Discard an incomplete batch session
+    fn discard_batch(&mut self, idx: usize) {
+        let Some(batch) = self.code_state.pending_resume_batches.get(idx) else {
+            return;
+        };
+
+        // Delete from database
+        if let Err(e) = self.history_service.delete_batch(&batch.session_id) {
+            warn!("Failed to delete batch state: {}", e);
+        }
+
+        // Remove from pending list
+        self.code_state.pending_resume_batches.remove(idx);
+    }
+
+    /// Render running controls (Pause/Cancel buttons and progress). Returns true if Pause clicked.
+    fn render_running_controls(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut pause_clicked = false;
+        ui.horizontal(|ui| {
+            pause_clicked = ui.button("Pause").clicked();
+            let cancel_clicked = ui.button("Cancel").clicked();
+            ui.spinner();
+
+            let progress_label = self.code_state.current_combo.as_ref()
+                .map(|combo| format!(
+                    "{}/{}: {} | {} | T={:.1} | {}tok",
+                    self.code_state.queue_completed + 1,
+                    self.code_state.queue_total,
+                    combo.model,
+                    combo.language.label(),
+                    combo.temperature,
+                    combo.max_tokens
+                ))
+                .unwrap_or_else(|| self.progress.clone());
+            ui.label(progress_label);
+
+            if cancel_clicked {
+                self.cancel_matrix_benchmark();
+            }
+        });
+        pause_clicked
+    }
+
     pub fn render_code_config(&mut self, ui: &mut egui::Ui) {
         let disabled = self.code_state.code_running || self.loading_models;
         let queue_running = !self.code_state.combo_queue.is_empty();
         let interactive = !disabled && !queue_running;
+
+        // Show incomplete sessions banner if any exist
+        self.render_incomplete_sessions_banner(ui, interactive);
 
         // Models dropdown with multi-select
         let models_label = format_selection_label(
@@ -412,28 +637,15 @@ impl BenchmarkPanel {
         ui.add_space(10.0);
 
         // Run button and options
+        let running = self.code_state.code_running || queue_running;
+        let pause_clicked = running && self.render_running_controls(ui);
+        if pause_clicked {
+            self.pause_matrix_benchmark();
+        }
+        if running {
+            return;
+        }
         ui.horizontal(|ui| {
-            // Show cancel and progress during run or queue
-            if self.code_state.code_running || queue_running {
-                if ui.button("Cancel").clicked() {
-                    self.cancel_matrix_benchmark();
-                }
-                ui.spinner();
-                if let Some(combo) = &self.code_state.current_combo {
-                    ui.label(format!(
-                        "{}/{}: {} | {} | T={:.1} | {}tok",
-                        self.code_state.queue_completed + 1,
-                        self.code_state.queue_total,
-                        combo.model,
-                        combo.language.label(),
-                        combo.temperature,
-                        combo.max_tokens
-                    ));
-                } else {
-                    ui.label(&self.progress);
-                }
-                return;
-            }
 
             // Calculate combinations
             let combo_count = self.code_state.combination_count();
@@ -458,6 +670,8 @@ impl BenchmarkPanel {
                 self.start_matrix_benchmark();
             }
             ui.checkbox(&mut self.code_state.auto_run_tests, "Run Tests");
+            ui.checkbox(&mut self.code_state.skip_on_error, "Skip on Error")
+                .on_hover_text("Skip failed combos and continue (for unattended runs)");
         });
     }
 
@@ -575,6 +789,13 @@ impl BenchmarkPanel {
         self.code_state.queue_completed = 0;
         self.code_state.batch_session_id = Some(uuid::Uuid::new_v4().to_string());
 
+        // Save initial batch state for resume capability
+        let batch = self.code_state.to_batch_state();
+        let save_result = batch.map(|b| self.history_service.insert_batch(&b));
+        if let Some(Err(e)) = save_result {
+            warn!("Failed to save batch state: {}", e);
+        }
+
         self.live_output.push_str(&format!(
             "\n=== Matrix Benchmark: {} combinations ===\n",
             self.code_state.queue_total
@@ -586,7 +807,12 @@ impl BenchmarkPanel {
     /// Advance to next combo in queue, starting preload if model changed
     pub(super) fn advance_to_next_combo(&mut self) {
         let Some(combo) = self.code_state.combo_queue.pop_front() else {
-            // Queue complete
+            // Queue complete - delete batch state
+            let delete_result = self.code_state.batch_session_id.as_ref()
+                .map(|sid| self.history_service.delete_batch(sid));
+            if let Some(Err(e)) = delete_result {
+                warn!("Failed to delete completed batch state: {}", e);
+            }
             self.live_output.push_str("\n=== All Combinations Complete ===\n");
             self.code_state.current_combo = None;
             self.code_state.queue_total = 0;
@@ -649,7 +875,45 @@ impl BenchmarkPanel {
     }
 
     /// Cancel matrix benchmark and clear queue
+    fn pause_matrix_benchmark(&mut self) {
+        // Save state with Paused status
+        let batch = self.code_state.to_batch_state();
+        let save_result = batch.as_ref().map(|b| {
+            let mut paused = b.clone();
+            paused.status = BatchStatus::Paused;
+            self.history_service.update_batch(&paused)
+        });
+        if let Some(Err(e)) = save_result {
+            warn!("Failed to save paused batch state: {}", e);
+        }
+
+        // Add to pending resume list
+        if let Some(b) = batch {
+            let mut paused = b;
+            paused.status = BatchStatus::Paused;
+            self.code_state.pending_resume_batches.push(paused);
+        }
+
+        // Cancel current execution
+        self.cancel_code_benchmark();
+
+        // Clear running state
+        self.code_state.combo_queue.clear();
+        self.code_state.current_combo = None;
+        self.code_state.queue_total = 0;
+        self.code_state.queue_completed = 0;
+        self.code_state.batch_session_id = None;
+        self.live_output.push_str("\n=== Matrix Benchmark Paused ===\n");
+    }
+
     fn cancel_matrix_benchmark(&mut self) {
+        // Delete batch state on cancel
+        let delete_result = self.code_state.batch_session_id.as_ref()
+            .map(|sid| self.history_service.delete_batch(sid));
+        if let Some(Err(e)) = delete_result {
+            warn!("Failed to delete cancelled batch state: {}", e);
+        }
+
         self.cancel_code_benchmark();
         self.code_state.combo_queue.clear();
         self.code_state.current_combo = None;
@@ -723,10 +987,19 @@ impl BenchmarkPanel {
                     should_clear = true;
 
                     // Advance to next combo in queue
-                    if !self.code_state.combo_queue.is_empty() {
-                        self.code_state.queue_completed += 1;
-                        self.advance_to_next_combo();
+                    let has_more = !self.code_state.combo_queue.is_empty();
+                    if !has_more { continue; }
+
+                    self.code_state.queue_completed += 1;
+                    // Update batch state for resume capability
+                    if let Some(mut batch) = self.code_state.to_batch_state() {
+                        batch.updated_at = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64;
+                        let _ = self.history_service.update_batch(&batch);
                     }
+                    self.advance_to_next_combo();
                 }
                 CodeBenchmarkEvent::Cancelled => {
                     self.code_state.code_running = false;
@@ -734,10 +1007,41 @@ impl BenchmarkPanel {
                     should_clear = true;
                 }
                 CodeBenchmarkEvent::Error { message } => {
-                    self.error = Some(message.clone());
                     self.code_state.code_running = false;
                     self.live_output.push_str(&format!("\nError: {}\n", message));
                     should_clear = true;
+
+                    // Handle based on skip_on_error setting
+                    let has_queue = !self.code_state.combo_queue.is_empty();
+                    if !has_queue {
+                        self.error = Some(message.clone());
+                        continue;
+                    }
+
+                    // skip_on_error: skip this combo and continue
+                    if self.code_state.skip_on_error {
+                        self.live_output.push_str("(Skipping to next combo...)\n");
+                        self.code_state.queue_completed += 1;
+                        self.advance_to_next_combo();
+                        continue;
+                    }
+
+                    // Auto-pause: save state and stop for user to resume
+                    self.live_output.push_str("(Auto-paused - use Resume to continue)\n");
+                    if let Some(mut batch) = self.code_state.to_batch_state() {
+                        batch.status = BatchStatus::Paused;
+                        batch.error_message = Some(message.clone());
+                        batch.failed_combo = self.code_state.current_combo.as_ref().map(|c| BatchCombo {
+                            model: c.model.clone(),
+                            language: c.language,
+                            temperature: c.temperature,
+                            max_tokens: c.max_tokens,
+                        });
+                        let _ = self.history_service.update_batch(&batch);
+                    }
+                    // Clear queue to stop processing
+                    self.code_state.combo_queue.clear();
+                    self.code_state.current_combo = None;
                 }
             }
         }
