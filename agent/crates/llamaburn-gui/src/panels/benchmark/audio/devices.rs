@@ -424,15 +424,23 @@ impl BenchmarkPanel {
         }
 
         let Some((l, r)) = latest else {
-            // Decay when no new data
-            self.input_levels.0 *= 0.9;
-            self.input_levels.1 *= 0.9;
+            // Slow decay when no data
+            self.input_levels.0 *= 0.95;
+            self.input_levels.1 *= 0.95;
             return;
         };
 
-        // Peak hold behavior - take max of current and new
-        self.input_levels.0 = self.input_levels.0.max(l);
-        self.input_levels.1 = self.input_levels.1.max(r);
+        // Exponential smoothing: fast attack, slow release
+        let attack = 0.6;  // Rise quickly to peaks
+        let release = 0.15; // Fall slowly
+
+        let smooth = |current: f32, target: f32| -> f32 {
+            let factor = if target > current { attack } else { release };
+            current + (target - current) * factor
+        };
+
+        self.input_levels.0 = smooth(self.input_levels.0, l);
+        self.input_levels.1 = smooth(self.input_levels.1, r);
 
         // Receive dense waveform peaks when recording
         if !self.live_recording {

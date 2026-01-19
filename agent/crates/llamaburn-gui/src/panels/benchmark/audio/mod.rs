@@ -81,13 +81,18 @@ impl BenchmarkPanel {
                 }
             });
 
-            // Always show VU meter when device is selected
+            // Only show VU meter when device is selected AND in Capture/Live mode
             let has_device = self.selected_device_id.is_some();
-            let needs_monitor = has_device && self.level_monitor_handle.is_none();
+            let needs_capture = self.audio_source_mode != super::AudioSourceMode::File;
+            let needs_monitor = has_device && needs_capture && self.level_monitor_handle.is_none();
             if needs_monitor {
                 self.start_level_monitor();
             }
-            if has_device {
+            // Stop monitor if switched to File mode
+            if !needs_capture && self.level_monitor_handle.is_some() {
+                self.stop_level_monitor();
+            }
+            if has_device && needs_capture {
                 self.render_level_meter(ui);
             }
 
