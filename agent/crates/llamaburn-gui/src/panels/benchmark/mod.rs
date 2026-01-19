@@ -731,6 +731,9 @@ impl BenchmarkPanel {
             if ui.small_button("Clear").clicked() {
                 self.live_output.clear();
             }
+            if ui.small_button("Export").clicked() && !self.live_output.is_empty() {
+                self.export_live_output();
+            }
         });
 
         if !self.live_output_expanded {
@@ -962,6 +965,20 @@ impl BenchmarkPanel {
         }
     }
 
+    fn export_live_output(&self) {
+        let content = self.live_output.clone();
+        std::thread::spawn(move || {
+            let path = rfd::FileDialog::new()
+                .set_title("Export Live Output")
+                .add_filter("Text Files", &["txt"])
+                .set_file_name("benchmark_output.txt")
+                .save_file();
+            let Some(path) = path else { return };
+            if let Err(e) = std::fs::write(&path, &content) {
+                tracing::error!("Failed to export live output: {}", e);
+            }
+        });
+    }
 }
 
 fn format_number(n: u64) -> String {

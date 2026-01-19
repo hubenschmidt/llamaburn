@@ -307,8 +307,13 @@ fn extract_function_name(code: &str, language: Language) -> String {
 }
 
 fn normalize_output(s: &str) -> String {
-    s.trim()
-        .replace(' ', "")
-        .replace('\n', "")
-        .replace('\r', "")
+    let trimmed = s.trim().replace(' ', "").replace('\n', "").replace('\r', "");
+
+    // Try to parse as a number and normalize (2 == 2.0)
+    if let Ok(n) = trimmed.parse::<f64>() {
+        let formatted = format!("{:.10}", n);
+        return formatted.trim_end_matches('0').trim_end_matches('.').to_string();
+    }
+
+    trimmed
 }

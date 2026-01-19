@@ -687,16 +687,16 @@ impl BenchmarkPanel {
                     self.code_state.generated_code.push_str(&content);
                     self.live_output.push_str(&content);
                 }
-                CodeBenchmarkEvent::ExecutingTests { current, total } => {
-                    let msg = format!("\nExecuting test {}/{}...", current, total);
-                    self.live_output.push_str(&msg);
+                CodeBenchmarkEvent::ExecutingTests { total } => {
+                    self.live_output.push_str(&format!("\nRunning {} tests...", total));
                 }
-                CodeBenchmarkEvent::TestResult { passed, expected, actual, error } => {
-                    let status = if passed { " ✅ PASS" } else { " ❌ FAIL" };
-                    self.live_output.push_str(status);
+                CodeBenchmarkEvent::TestResult { test_num, test_total, passed, expected, actual, error } => {
+                    let status = if passed { "✅" } else { "❌" };
+                    self.live_output.push_str(&format!("\n  Test {}/{}: {} ", test_num, test_total, status));
                     if !passed {
-                        self.live_output.push_str(&format!("\n    Expected: {}", expected));
-                        self.live_output.push_str(&format!("\n    Actual:   {}", actual));
+                        self.live_output.push_str(&format!("Expected: {} | Actual: {}", expected, actual));
+                    } else {
+                        self.live_output.push_str("PASS");
                     }
                     if let Some(e) = error {
                         self.live_output.push_str(&format!("\n    Error: {}", e));

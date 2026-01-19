@@ -15,6 +15,7 @@ pub struct LoadCodeBenchmarkRequest {
 }
 
 /// Unified history entry for display
+#[derive(Clone)]
 pub enum HistoryEntry {
     Text(BenchmarkHistoryEntry),
     Audio(AudioHistoryEntry),
@@ -297,6 +298,10 @@ impl HistoryPanel {
                     if selected_count > 0 && ui.button(format!("Delete Selected ({})", selected_count)).clicked() {
                         self.delete_confirm = Some("__selected__".to_string());
                     }
+
+                    if !self.entries.is_empty() && ui.button("Export CSV").clicked() {
+                        self.export_csv();
+                    }
                 }
             }
         });
@@ -367,7 +372,7 @@ impl HistoryPanel {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 egui::Grid::new("history_table")
-                    .num_columns(12)
+                    .num_columns(16)
                     .spacing([10.0, 6.0])
                     .striped(true)
                     .show(ui, |ui| {
@@ -376,14 +381,18 @@ impl HistoryPanel {
                         ui.label(egui::RichText::new("Model").strong());
                         ui.label(egui::RichText::new("Type").strong());
                         ui.label(egui::RichText::new("Params").strong());
-                        ui.label(egui::RichText::new("Primary").strong());
-                        ui.label(egui::RichText::new("Secondary").strong());
-                        ui.label(egui::RichText::new("Tertiary").strong());
+                        ui.label(egui::RichText::new("TPS").strong());
+                        ui.label(egui::RichText::new("Test Pass").strong());
+                        ui.label(egui::RichText::new("TTFT").strong());
+                        ui.label(egui::RichText::new("RTF").strong());
+                        ui.label(egui::RichText::new("Runs").strong());
+                        ui.label(egui::RichText::new("Exec").strong());
                         ui.label(egui::RichText::new("Detail").strong());
                         ui.label(egui::RichText::new("Session").strong());
                         ui.label(egui::RichText::new("Date").strong());
                         ui.label(egui::RichText::new("").strong()); // Load
                         ui.label(egui::RichText::new("").strong()); // Delete
+                        ui.label(egui::RichText::new("").strong()); // padding
                         ui.end_row();
 
                         // Rows
@@ -397,11 +406,47 @@ impl HistoryPanel {
                             ui.label(entry.model_id());
                             ui.label(entry.benchmark_type().label());
                             ui.label(entry.code_params());
-                            // Show metric with label for clarity
-                            ui.label(format!("{} {}", entry.metric_1(), entry.metric_1_label()));
-                            ui.label(format!("{} {}", entry.metric_2(), entry.metric_2_label()));
-                            ui.label(format!("{} {}", entry.metric_3(), entry.metric_3_label()));
-                            ui.label(format!("{} {}", entry.metric_4(), entry.metric_4_label()));
+
+                            // Separate columns per metric type
+                            let (tps, pass, ttft, rtf, runs, exec, detail) = match entry {
+                                HistoryEntry::Text(e) => (
+                                    format!("{:.1}", e.summary.avg_tps),
+                                    String::new(),
+                                    format!("{:.0}ms", e.summary.avg_ttft_ms),
+                                    String::new(),
+                                    e.summary.iterations.to_string(),
+                                    String::new(),
+                                    format!("{:.1}/{:.1}", e.summary.min_tps, e.summary.max_tps),
+                                ),
+                                HistoryEntry::Audio(e) => (
+                                    String::new(),
+                                    String::new(),
+                                    String::new(),
+                                    format!("{:.3}x", e.summary.avg_rtf),
+                                    e.summary.iterations.to_string(),
+                                    String::new(),
+                                    format!("{:.3}/{:.3}", e.summary.min_rtf, e.summary.max_rtf),
+                                ),
+                                HistoryEntry::Code(e) => (
+                                    format!("{:.1}", e.summary.avg_tps),
+                                    format!("{:.1}%", e.summary.pass_rate * 100.0),
+                                    String::new(),
+                                    String::new(),
+                                    String::new(),
+                                    format!("{:.0}ms", e.summary.avg_execution_time_ms),
+                                    format!("E:{}/{} M:{}/{} H:{}/{}",
+                                        e.summary.easy_solved, e.summary.easy_total,
+                                        e.summary.medium_solved, e.summary.medium_total,
+                                        e.summary.hard_solved, e.summary.hard_total),
+                                ),
+                            };
+                            ui.label(tps);
+                            ui.label(pass);
+                            ui.label(ttft);
+                            ui.label(rtf);
+                            ui.label(runs);
+                            ui.label(exec);
+                            ui.label(detail);
                             ui.label(entry.session_display());
                             ui.label(format_timestamp(entry.timestamp()));
 
@@ -423,6 +468,7 @@ impl HistoryPanel {
                             if ui.small_button("🗑").clicked() {
                                 delete_id = Some(entry_id);
                             }
+                            ui.label(""); // padding
                             ui.end_row();
                         }
                     });
@@ -553,6 +599,68 @@ impl HistoryPanel {
 
         ui.label(format_value(best));
         ui.end_row();
+    }
+
+    fn export_csv(&self) {
+        let entries = self.entries.clone();
+        std::thread::spawn(move || {
+            let path = rfd::FileDialog::new()
+                .set_title("Export History")
+                .add_filter("CSV Files", &["csv"])
+                .set_file_name("benchmark_history.csv")
+                .save_file();
+            let Some(path) = path else { return };
+
+            let mut csv = String::from("Timestamp,Model,Type,Params,TPS,Test Pass,TTFT,RTF,Runs,ExecTime,Detail,Session\n");
+            for entry in &entries {
+                let (tps, pass, ttft, rtf, runs, exec, detail) = match &entry {
+                    HistoryEntry::Text(e) => (
+                        format!("{:.1}", e.summary.avg_tps),
+                        String::new(),
+                        format!("{:.0}", e.summary.avg_ttft_ms),
+                        String::new(),
+                        e.summary.iterations.to_string(),
+                        String::new(),
+                        format!("{:.1}/{:.1}", e.summary.min_tps, e.summary.max_tps),
+                    ),
+                    HistoryEntry::Audio(e) => (
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        format!("{:.3}", e.summary.avg_rtf),
+                        e.summary.iterations.to_string(),
+                        String::new(),
+                        format!("{:.3}/{:.3}", e.summary.min_rtf, e.summary.max_rtf),
+                    ),
+                    HistoryEntry::Code(e) => (
+                        format!("{:.1}", e.summary.avg_tps),
+                        format!("{:.1}", e.summary.pass_rate * 100.0),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        format!("{:.0}", e.summary.avg_execution_time_ms),
+                        format!("E:{}/{} M:{}/{} H:{}/{}",
+                            e.summary.easy_solved, e.summary.easy_total,
+                            e.summary.medium_solved, e.summary.medium_total,
+                            e.summary.hard_solved, e.summary.hard_total),
+                    ),
+                };
+                let row = format!(
+                    "{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                    entry.timestamp(),
+                    entry.model_id(),
+                    format!("{:?}", entry.benchmark_type()),
+                    entry.code_params().replace(',', ";"),
+                    tps, pass, ttft, rtf, runs, exec, detail,
+                    entry.session_display(),
+                );
+                csv.push_str(&row);
+            }
+
+            if let Err(e) = std::fs::write(&path, &csv) {
+                tracing::error!("Failed to export history CSV: {}", e);
+            }
+        });
     }
 }
 

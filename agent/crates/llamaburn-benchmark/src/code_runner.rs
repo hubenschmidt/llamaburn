@@ -17,8 +17,8 @@ pub enum CodeBenchmarkEvent {
     Problem { current: u32, total: u32, title: String },
     GeneratingCode,
     Token { content: String },
-    ExecutingTests { current: u32, total: u32 },
-    TestResult { passed: bool, expected: String, actual: String, error: Option<String> },
+    ExecutingTests { total: u32 },
+    TestResult { test_num: u32, test_total: u32, passed: bool, expected: String, actual: String, error: Option<String> },
     ProblemComplete { metrics: CodeBenchmarkMetrics },
     Done { summary: CodeBenchmarkSummary },
     Cancelled,
@@ -242,15 +242,9 @@ impl CodeBenchmarkRunner {
         tx: &mpsc::Sender<CodeBenchmarkEvent>,
     ) -> std::result::Result<Vec<TestResult>, String> {
         let test_cases = &problem.test_cases;
+        let total = test_cases.len() as u32;
 
-        for (idx, _test_case) in test_cases.iter().enumerate() {
-            let _ = tx
-                .send(CodeBenchmarkEvent::ExecutingTests {
-                    current: idx as u32 + 1,
-                    total: test_cases.len() as u32,
-                })
-                .await;
-        }
+        let _ = tx.send(CodeBenchmarkEvent::ExecutingTests { total }).await;
 
         let test_results = self
             .executor
@@ -258,9 +252,11 @@ impl CodeBenchmarkRunner {
             .await
             .map_err(|e| e.to_string())?;
 
-        for result in &test_results {
+        for (idx, result) in test_results.iter().enumerate() {
             let _ = tx
                 .send(CodeBenchmarkEvent::TestResult {
+                    test_num: idx as u32 + 1,
+                    test_total: total,
                     passed: result.passed,
                     expected: result.expected_output.clone(),
                     actual: result.actual_output.clone(),
@@ -362,24 +358,20 @@ pub async fn run_tests_only(
 ) -> std::result::Result<(u32, u32, f64), String> {
     let executor = CodeExecutor::default();
     let test_cases = &problem.test_cases;
+    let total = test_cases.len() as u32;
 
-    for (idx, _) in test_cases.iter().enumerate() {
-        let _ = tx
-            .send(CodeBenchmarkEvent::ExecutingTests {
-                current: idx as u32 + 1,
-                total: test_cases.len() as u32,
-            })
-            .await;
-    }
+    let _ = tx.send(CodeBenchmarkEvent::ExecutingTests { total }).await;
 
     let test_results = executor
         .run_tests(code, language, test_cases, problem.time_limit_ms)
         .await
         .map_err(|e| e.to_string())?;
 
-    for result in &test_results {
+    for (idx, result) in test_results.iter().enumerate() {
         let _ = tx
             .send(CodeBenchmarkEvent::TestResult {
+                test_num: idx as u32 + 1,
+                test_total: total,
                 passed: result.passed,
                 expected: result.expected_output.clone(),
                 actual: result.actual_output.clone(),
@@ -389,7 +381,6 @@ pub async fn run_tests_only(
     }
 
     let passed = test_results.iter().filter(|r| r.passed).count() as u32;
-    let total = test_results.len() as u32;
     let exec_time = test_results.iter().map(|r| r.execution_time_ms).sum();
 
     Ok((passed, total, exec_time))
