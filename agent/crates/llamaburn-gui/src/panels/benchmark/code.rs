@@ -161,8 +161,10 @@ impl BenchmarkPanel {
         ui.add_space(5.0);
 
         let problems = self.code_state.current_problems().to_vec();
+        // Use available height minus space for buttons below
+        let problems_height = (ui.available_height() - 50.0).max(80.0);
         egui::ScrollArea::vertical()
-            .max_height(150.0)
+            .max_height(problems_height)
             .show(ui, |ui| {
                 for problem in &problems {
                     let is_selected = self.code_state.selected_problem_ids.contains(&problem.id);

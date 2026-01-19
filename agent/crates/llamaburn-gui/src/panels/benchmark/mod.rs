@@ -499,11 +499,15 @@ impl BenchmarkPanel {
             self.render_type_selector(ui);
             ui.add_space(10.0);
 
-            // Scrollable config area with fixed max height
+            // Scrollable config area - height adjusts with Live Output
+            let panel_height = self.config_panel_height.clamp(100.0, 1000.0);
             egui::ScrollArea::vertical()
-                .max_height(self.config_panel_height.clamp(100.0, 600.0))
+                .max_height(panel_height)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    // Set minimum height so content fills the panel
+                    ui.set_min_height(panel_height - 20.0);
+
                     // Config, Model Info, and Results - responsive columns
                     let available = ui.available_width();
                     let spacing = 15.0;
@@ -516,10 +520,12 @@ impl BenchmarkPanel {
                     let info_width = content_width * 0.30;
                     let results_width = content_width * 0.35;
 
+                    let column_height = panel_height - 30.0;
                     ui.horizontal(|ui| {
                         // Left: Config
                         ui.vertical(|ui| {
                             ui.set_width(config_width);
+                            ui.set_min_height(column_height);
                             self.render_config(ui);
                         });
 
@@ -530,6 +536,7 @@ impl BenchmarkPanel {
                         // Center: Model Info + Whisper Models (for Audio mode)
                         ui.vertical(|ui| {
                             ui.set_width(info_width);
+                            ui.set_min_height(column_height);
                             self.render_model_info(ui);
 
                             // Whisper Models for Audio mode
@@ -548,6 +555,7 @@ impl BenchmarkPanel {
                         // Right: Results
                         ui.vertical(|ui| {
                             ui.set_width(results_width);
+                            ui.set_min_height(column_height);
                             self.render_results(ui);
                         });
                     });
@@ -583,7 +591,7 @@ impl BenchmarkPanel {
 
             if response.dragged() {
                 self.config_panel_height += response.drag_delta().y;
-                self.config_panel_height = self.config_panel_height.clamp(100.0, 600.0);
+                self.config_panel_height = self.config_panel_height.clamp(100.0, 1000.0);
             }
 
             if response.hovered() {
@@ -747,8 +755,12 @@ impl BenchmarkPanel {
         );
 
         if response.dragged() {
-            self.live_output_height += response.drag_delta().y;
+            let delta = response.drag_delta().y;
+            self.live_output_height += delta;
             self.live_output_height = self.live_output_height.clamp(80.0, available_height);
+            // Inversely adjust config panel height
+            self.config_panel_height -= delta;
+            self.config_panel_height = self.config_panel_height.clamp(100.0, 1000.0);
         }
 
         if response.hovered() {
