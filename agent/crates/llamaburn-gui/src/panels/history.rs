@@ -1,12 +1,122 @@
 use eframe::egui;
 use llamaburn_core::BenchmarkType;
-use llamaburn_services::{BenchmarkHistoryEntry, HistoryFilter, HistoryService};
+use llamaburn_services::{AudioHistoryEntry, BenchmarkHistoryEntry, CodeHistoryEntry, HistoryFilter, HistoryService};
 use std::collections::HashSet;
 use std::sync::Arc;
 
+/// Unified history entry for display
+pub enum HistoryEntry {
+    Text(BenchmarkHistoryEntry),
+    Audio(AudioHistoryEntry),
+    Code(CodeHistoryEntry),
+}
+
+impl HistoryEntry {
+    pub fn id(&self) -> &str {
+        match self {
+            HistoryEntry::Text(e) => &e.id,
+            HistoryEntry::Audio(e) => &e.id,
+            HistoryEntry::Code(e) => &e.id,
+        }
+    }
+
+    pub fn timestamp(&self) -> i64 {
+        match self {
+            HistoryEntry::Text(e) => e.timestamp,
+            HistoryEntry::Audio(e) => e.timestamp,
+            HistoryEntry::Code(e) => e.timestamp,
+        }
+    }
+
+    pub fn model_id(&self) -> &str {
+        match self {
+            HistoryEntry::Text(e) => &e.model_id,
+            HistoryEntry::Audio(e) => &e.model_id,
+            HistoryEntry::Code(e) => &e.model_id,
+        }
+    }
+
+    pub fn benchmark_type(&self) -> BenchmarkType {
+        match self {
+            HistoryEntry::Text(e) => e.benchmark_type,
+            HistoryEntry::Audio(e) => e.benchmark_type,
+            HistoryEntry::Code(e) => e.benchmark_type,
+        }
+    }
+
+    pub fn metric_1(&self) -> String {
+        match self {
+            HistoryEntry::Text(e) => format!("{:.1}", e.summary.avg_tps),
+            HistoryEntry::Audio(e) => format!("{:.3}x", e.summary.avg_rtf),
+            HistoryEntry::Code(e) => format!("{:.1}%", e.summary.pass_rate * 100.0),
+        }
+    }
+
+    pub fn metric_1_label(&self) -> &'static str {
+        match self {
+            HistoryEntry::Text(_) => "TPS",
+            HistoryEntry::Audio(_) => "RTF",
+            HistoryEntry::Code(_) => "Pass",
+        }
+    }
+
+    pub fn metric_2(&self) -> String {
+        match self {
+            HistoryEntry::Text(e) => format!("{:.0}ms", e.summary.avg_ttft_ms),
+            HistoryEntry::Audio(e) => format!("{:.0}ms", e.summary.avg_processing_ms),
+            HistoryEntry::Code(e) => format!("{:.1}", e.summary.avg_tps),
+        }
+    }
+
+    pub fn metric_2_label(&self) -> &'static str {
+        match self {
+            HistoryEntry::Text(_) => "TTFT",
+            HistoryEntry::Audio(_) => "Time",
+            HistoryEntry::Code(_) => "TPS",
+        }
+    }
+
+    pub fn metric_3(&self) -> String {
+        match self {
+            HistoryEntry::Text(e) => format!("{}", e.summary.iterations),
+            HistoryEntry::Audio(e) => format!("{}", e.summary.iterations),
+            HistoryEntry::Code(e) => format!("{:.0}ms", e.summary.avg_execution_time_ms),
+        }
+    }
+
+    pub fn metric_3_label(&self) -> &'static str {
+        match self {
+            HistoryEntry::Text(_) => "Runs",
+            HistoryEntry::Audio(_) => "Runs",
+            HistoryEntry::Code(_) => "Exec",
+        }
+    }
+
+    pub fn metric_4(&self) -> String {
+        match self {
+            HistoryEntry::Text(e) => format!("{:.1}/{:.1}", e.summary.min_tps, e.summary.max_tps),
+            HistoryEntry::Audio(e) => format!("{:.3}/{:.3}", e.summary.min_rtf, e.summary.max_rtf),
+            HistoryEntry::Code(e) => format!(
+                "E:{}/{} M:{}/{} H:{}/{}",
+                e.summary.easy_solved, e.summary.easy_total,
+                e.summary.medium_solved, e.summary.medium_total,
+                e.summary.hard_solved, e.summary.hard_total
+            ),
+        }
+    }
+
+    pub fn metric_4_label(&self) -> &'static str {
+        match self {
+            HistoryEntry::Text(_) => "Min/Max",
+            HistoryEntry::Audio(_) => "Min/Max",
+            HistoryEntry::Code(_) => "By Diff",
+        }
+    }
+}
+
 pub struct HistoryPanel {
     history_service: Arc<HistoryService>,
-    entries: Vec<BenchmarkHistoryEntry>,
+    entries: Vec<HistoryEntry>,
     filter_type: Option<BenchmarkType>,
     needs_refresh: bool,
     delete_confirm: Option<String>,
@@ -28,20 +138,44 @@ impl HistoryPanel {
     }
 
     fn refresh(&mut self) {
-        let filter = HistoryFilter {
-            benchmark_type: self.filter_type,
-            limit: Some(100),
-            ..Default::default()
-        };
+        let limit = Some(100);
+        let mut entries: Vec<HistoryEntry> = Vec::new();
 
-        match self.history_service.list(filter) {
-            Ok(entries) => {
-                self.entries = entries;
-            }
-            Err(e) => {
-                tracing::warn!("Failed to load history: {}", e);
+        // Load based on filter
+        let load_text = self.filter_type.is_none() || self.filter_type == Some(BenchmarkType::Text);
+        let load_audio = self.filter_type.is_none() || self.filter_type == Some(BenchmarkType::Audio);
+        let load_code = self.filter_type.is_none() || self.filter_type == Some(BenchmarkType::Code);
+
+        if load_text {
+            let filter = HistoryFilter {
+                benchmark_type: Some(BenchmarkType::Text),
+                limit,
+                ..Default::default()
+            };
+            if let Ok(text_entries) = self.history_service.list(filter) {
+                entries.extend(text_entries.into_iter().map(HistoryEntry::Text));
             }
         }
+
+        if load_audio {
+            if let Ok(audio_entries) = self.history_service.list_audio(limit) {
+                entries.extend(audio_entries.into_iter().map(HistoryEntry::Audio));
+            }
+        }
+
+        if load_code {
+            if let Ok(code_entries) = self.history_service.list_code(limit) {
+                entries.extend(code_entries.into_iter().map(HistoryEntry::Code));
+            }
+        }
+
+        // Sort by timestamp descending
+        entries.sort_by(|a, b| b.timestamp().cmp(&a.timestamp()));
+
+        // Limit total entries
+        entries.truncate(100);
+
+        self.entries = entries;
         self.needs_refresh = false;
     }
 
@@ -62,9 +196,9 @@ impl HistoryPanel {
 
         if self.show_comparison {
             self.render_comparison(ui);
-        } else {
-            self.render_table(ui);
+            return;
         }
+        self.render_table(ui);
     }
 
     fn render_filters(&mut self, ui: &mut egui::Ui) {
@@ -137,11 +271,11 @@ impl HistoryPanel {
                 .collapsible(false)
                 .resizable(false)
                 .show(ui.ctx(), |ui| {
-                    if id == "__all__" {
-                        ui.label("Delete ALL benchmark history?");
-                    } else {
-                        ui.label(format!("Delete entry {}?", &id[..8.min(id.len())]));
-                    }
+                    let msg = match id.as_str() {
+                        "__all__" => "Delete ALL benchmark history?".to_string(),
+                        _ => format!("Delete entry {}?", &id[..8.min(id.len())]),
+                    };
+                    ui.label(msg);
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
@@ -151,14 +285,12 @@ impl HistoryPanel {
                             .button(egui::RichText::new("Delete").color(egui::Color32::RED))
                             .clicked()
                         {
-                            if id == "__all__" {
-                                if let Err(e) = self.history_service.clear_all() {
-                                    tracing::warn!("Failed to clear history: {}", e);
-                                }
-                            } else {
-                                if let Err(e) = self.history_service.delete(&id) {
-                                    tracing::warn!("Failed to delete entry: {}", e);
-                                }
+                            let result = match id.as_str() {
+                                "__all__" => self.history_service.clear_all(),
+                                _ => self.history_service.delete(&id),
+                            };
+                            if let Err(e) = result {
+                                tracing::warn!("Failed to delete: {}", e);
                             }
                             self.delete_confirm = None;
                             self.needs_refresh = true;
@@ -184,35 +316,41 @@ impl HistoryPanel {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 egui::Grid::new("history_table")
-                    .num_columns(7)
-                    .spacing([15.0, 8.0])
+                    .num_columns(9)
+                    .spacing([10.0, 6.0])
                     .striped(true)
                     .show(ui, |ui| {
                         // Header
-                        ui.label(egui::RichText::new("").strong()); // Checkbox
+                        ui.label(egui::RichText::new("").strong());
                         ui.label(egui::RichText::new("Model").strong());
                         ui.label(egui::RichText::new("Type").strong());
-                        ui.label(egui::RichText::new("Avg TPS").strong());
-                        ui.label(egui::RichText::new("TTFT").strong());
+                        ui.label(egui::RichText::new("Primary").strong());
+                        ui.label(egui::RichText::new("Secondary").strong());
+                        ui.label(egui::RichText::new("Tertiary").strong());
+                        ui.label(egui::RichText::new("Detail").strong());
                         ui.label(egui::RichText::new("Date").strong());
-                        ui.label(egui::RichText::new("").strong()); // Actions
+                        ui.label(egui::RichText::new("").strong());
                         ui.end_row();
 
                         // Rows
                         for entry in &self.entries {
-                            let is_selected = self.selected_ids.contains(&entry.id);
+                            let entry_id = entry.id().to_string();
+                            let is_selected = self.selected_ids.contains(&entry_id);
                             if ui.checkbox(&mut is_selected.clone(), "").clicked() {
-                                toggle_id = Some(entry.id.clone());
+                                toggle_id = Some(entry_id.clone());
                             }
 
-                            ui.label(&entry.model_id);
-                            ui.label(entry.benchmark_type.label());
-                            ui.label(format!("{:.1}", entry.summary.avg_tps));
-                            ui.label(format!("{:.0}ms", entry.summary.avg_ttft_ms));
-                            ui.label(format_timestamp(entry.timestamp));
+                            ui.label(entry.model_id());
+                            ui.label(entry.benchmark_type().label());
+                            // Show metric with label for clarity
+                            ui.label(format!("{} {}", entry.metric_1(), entry.metric_1_label()));
+                            ui.label(format!("{} {}", entry.metric_2(), entry.metric_2_label()));
+                            ui.label(format!("{} {}", entry.metric_3(), entry.metric_3_label()));
+                            ui.label(format!("{} {}", entry.metric_4(), entry.metric_4_label()));
+                            ui.label(format_timestamp(entry.timestamp()));
 
                             if ui.small_button("🗑").clicked() {
-                                delete_id = Some(entry.id.clone());
+                                delete_id = Some(entry_id);
                             }
                             ui.end_row();
                         }
@@ -221,9 +359,9 @@ impl HistoryPanel {
 
         // Handle toggle outside the borrow
         if let Some(id) = toggle_id {
-            if self.selected_ids.contains(&id) {
-                self.selected_ids.remove(&id);
-            } else {
+            // Toggle: remove if present, insert if not
+            let was_present = self.selected_ids.remove(&id);
+            if !was_present {
                 self.selected_ids.insert(id);
             }
         }
@@ -234,14 +372,20 @@ impl HistoryPanel {
     }
 
     fn render_comparison(&self, ui: &mut egui::Ui) {
+        // Only compare Text entries for now
         let selected_entries: Vec<&BenchmarkHistoryEntry> = self
             .entries
             .iter()
-            .filter(|e| self.selected_ids.contains(&e.id))
+            .filter(|e| self.selected_ids.contains(e.id()))
+            .filter_map(|e| match e {
+                HistoryEntry::Text(entry) => Some(entry),
+                _ => None,
+            })
             .collect();
 
         if selected_entries.len() < 2 {
-            ui.label("Select at least 2 entries to compare");
+            ui.label("Select at least 2 Text benchmark entries to compare");
+            ui.label("(Audio and Code comparison not yet supported)");
             return;
         }
 
@@ -316,10 +460,11 @@ impl HistoryPanel {
         ui.label(label);
 
         let values: Vec<f64> = entries.iter().map(|e| get_value(e)).collect();
-        let best = match higher_is_better {
-            true => values.iter().cloned().fold(f64::MIN, f64::max),
-            false => values.iter().cloned().fold(f64::MAX, f64::min),
+        let (init, fold_fn): (f64, fn(f64, f64) -> f64) = match higher_is_better {
+            true => (f64::MIN, f64::max),
+            false => (f64::MAX, f64::min),
         };
+        let best = values.iter().cloned().fold(init, fold_fn);
 
         for entry in entries {
             let value = get_value(entry);

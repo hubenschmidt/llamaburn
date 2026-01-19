@@ -1,13 +1,16 @@
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use eframe::egui;
+use tracing::{info, warn};
 
 use llamaburn_benchmark::{load_all_problem_sets, CodeBenchmarkEvent, CodeBenchmarkRunner};
 use llamaburn_core::{
-    CodeBenchmarkConfig, CodeBenchmarkMetrics, CodeBenchmarkSummary, CodeProblem, Difficulty,
-    Language, ProblemSet,
+    BenchmarkType, CodeBenchmarkConfig, CodeBenchmarkMetrics, CodeBenchmarkSummary, CodeProblem,
+    Difficulty, Language, ProblemSet,
 };
+use llamaburn_services::CodeHistoryEntry;
 
 use super::components::render_model_selector;
 use super::BenchmarkPanel;
@@ -35,6 +38,7 @@ pub struct CodeBenchmarkState {
 
     // Rankings
     pub code_leaderboard: Vec<(String, f64)>,
+    pub last_language_for_rankings: Option<Language>,
 }
 
 impl CodeBenchmarkState {
@@ -56,6 +60,7 @@ impl CodeBenchmarkState {
             code_summary: None,
             code_output: String::new(),
             code_leaderboard: Vec::new(),
+            last_language_for_rankings: None,
         }
     }
 
@@ -408,9 +413,11 @@ impl BenchmarkPanel {
     }
 
     pub fn poll_code_benchmark(&mut self) {
-        let Some(rx) = &self.code_state.code_rx else {
+        let Some(rx) = self.code_state.code_rx.take() else {
             return;
         };
+
+        let mut should_clear = false;
 
         while let Ok(event) = rx.try_recv() {
             match event {
@@ -458,24 +465,98 @@ impl BenchmarkPanel {
                 CodeBenchmarkEvent::Done { summary } => {
                     self.code_state.code_summary = Some(summary.clone());
                     self.code_state.code_running = false;
+                    self.save_code_to_history(&summary);
+                    self.force_refresh_code_rankings();
                     self.live_output.push_str(&format!(
                         "\n=== Benchmark Complete ===\nPass Rate: {:.1}%\nSolved: {}/{}\n",
                         summary.pass_rate * 100.0,
                         summary.problems_solved,
                         summary.problems_total
                     ));
+                    should_clear = true;
                 }
                 CodeBenchmarkEvent::Cancelled => {
                     self.code_state.code_running = false;
                     self.live_output.push_str("\nCancelled\n");
+                    should_clear = true;
                 }
                 CodeBenchmarkEvent::Error { message } => {
                     self.error = Some(message.clone());
                     self.code_state.code_running = false;
                     self.live_output.push_str(&format!("\nError: {}\n", message));
+                    should_clear = true;
                 }
             }
         }
+
+        if !should_clear {
+            self.code_state.code_rx = Some(rx);
+        }
+    }
+
+    fn save_code_to_history(&self, summary: &CodeBenchmarkSummary) {
+        let model_id = self.selected_model.clone();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let config = CodeBenchmarkConfig {
+            model_id: model_id.clone(),
+            language: self.code_state.language,
+            problem_ids: self
+                .code_state
+                .code_metrics
+                .iter()
+                .map(|m| m.problem_id.clone())
+                .collect(),
+            temperature: self.code_state.code_temperature,
+            max_tokens: Some(self.code_state.code_max_tokens),
+            warmup_runs: self.warmup,
+            run_tests: self.code_state.auto_run_tests,
+        };
+
+        let entry = CodeHistoryEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            timestamp,
+            benchmark_type: BenchmarkType::Code,
+            model_id,
+            language: self.code_state.language,
+            config,
+            summary: summary.clone(),
+            metrics: self.code_state.code_metrics.clone(),
+        };
+
+        if let Err(e) = self.history_service.insert_code(&entry) {
+            warn!("Failed to save code benchmark history: {}", e);
+        } else {
+            info!("Saved code benchmark result to history: {}", entry.id);
+        }
+    }
+
+    pub(super) fn refresh_code_rankings(&mut self) {
+        if self.benchmark_type != BenchmarkType::Code {
+            return;
+        }
+
+        let lang = self.code_state.language;
+        if self.code_state.last_language_for_rankings == Some(lang) {
+            return;
+        }
+
+        self.code_state.last_language_for_rankings = Some(lang);
+        self.code_state.code_leaderboard = self
+            .history_service
+            .get_code_leaderboard(lang, 5)
+            .unwrap_or_default();
+    }
+
+    fn force_refresh_code_rankings(&mut self) {
+        self.code_state.last_language_for_rankings = None;
+        self.code_state.code_leaderboard = self
+            .history_service
+            .get_code_leaderboard(self.code_state.language, 5)
+            .unwrap_or_default();
     }
 }
 

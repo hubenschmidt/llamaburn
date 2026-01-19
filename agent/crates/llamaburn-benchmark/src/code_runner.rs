@@ -214,6 +214,7 @@ impl CodeBenchmarkRunner {
 
         Ok(CodeBenchmarkMetrics {
             problem_id: problem.id.clone(),
+            difficulty: problem.difficulty,
             ttft_ms,
             tokens_per_sec,
             tests_passed,
@@ -301,25 +302,36 @@ Examples:
     }
 
     fn calculate_summary(metrics: &[CodeBenchmarkMetrics]) -> CodeBenchmarkSummary {
+        use llamaburn_core::Difficulty::{self, *};
+
         let problems_total = metrics.len() as u32;
         let problems_solved = metrics.iter().filter(|m| m.tests_passed == m.tests_total).count() as u32;
-        let pass_rate = if problems_total > 0 {
-            problems_solved as f64 / problems_total as f64
-        } else {
-            0.0
+        let pass_rate = match problems_total {
+            0 => 0.0,
+            _ => problems_solved as f64 / problems_total as f64,
         };
 
-        let avg_tps = if !metrics.is_empty() {
-            metrics.iter().map(|m| m.tokens_per_sec).sum::<f64>() / metrics.len() as f64
-        } else {
-            0.0
+        let avg_tps = match metrics.is_empty() {
+            true => 0.0,
+            false => metrics.iter().map(|m| m.tokens_per_sec).sum::<f64>() / metrics.len() as f64,
         };
 
-        let avg_execution_time_ms = if !metrics.is_empty() {
-            metrics.iter().map(|m| m.execution_time_ms).sum::<f64>() / metrics.len() as f64
-        } else {
-            0.0
+        let avg_execution_time_ms = match metrics.is_empty() {
+            true => 0.0,
+            false => metrics.iter().map(|m| m.execution_time_ms).sum::<f64>() / metrics.len() as f64,
         };
+
+        // Calculate difficulty breakdown
+        let count_by_difficulty = |diff: Difficulty| -> (u32, u32) {
+            let matching: Vec<_> = metrics.iter().filter(|m| m.difficulty == diff).collect();
+            let total = matching.len() as u32;
+            let solved = matching.iter().filter(|m| m.tests_passed == m.tests_total).count() as u32;
+            (solved, total)
+        };
+
+        let (easy_solved, easy_total) = count_by_difficulty(Easy);
+        let (medium_solved, medium_total) = count_by_difficulty(Medium);
+        let (hard_solved, hard_total) = count_by_difficulty(Hard);
 
         CodeBenchmarkSummary {
             pass_rate,
@@ -327,6 +339,12 @@ Examples:
             problems_total,
             avg_tps,
             avg_execution_time_ms,
+            easy_solved,
+            easy_total,
+            medium_solved,
+            medium_total,
+            hard_solved,
+            hard_total,
         }
     }
 }

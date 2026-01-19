@@ -1,7 +1,8 @@
 use llamaburn_benchmark::BenchmarkSummary;
 use llamaburn_core::{
     AudioBenchmarkConfig, AudioBenchmarkMetrics, AudioBenchmarkSummary, AudioMode,
-    BenchmarkConfig, BenchmarkMetrics, BenchmarkType, EffectDetectionResult, EffectDetectionTool,
+    BenchmarkConfig, BenchmarkMetrics, BenchmarkType, CodeBenchmarkConfig, CodeBenchmarkMetrics,
+    CodeBenchmarkSummary, EffectDetectionResult, EffectDetectionTool, Language,
 };
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -50,6 +51,18 @@ pub struct AudioHistoryEntry {
     pub config: AudioBenchmarkConfig,
     pub summary: AudioBenchmarkSummary,
     pub metrics: Vec<AudioBenchmarkMetrics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeHistoryEntry {
+    pub id: String,
+    pub timestamp: i64,
+    pub benchmark_type: BenchmarkType,
+    pub model_id: String,
+    pub language: Language,
+    pub config: CodeBenchmarkConfig,
+    pub summary: CodeBenchmarkSummary,
+    pub metrics: Vec<CodeBenchmarkMetrics>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,14 +198,24 @@ impl HistoryService {
         let mut entries = Vec::new();
         for row in rows {
             let row = row?;
+            // Skip rows that fail deserialization (e.g., Audio/Code entries with different schemas)
+            let Ok(config) = serde_json::from_str(&row.config_json) else {
+                continue;
+            };
+            let Ok(summary) = serde_json::from_str(&row.summary_json) else {
+                continue;
+            };
+            let Ok(metrics) = serde_json::from_str(&row.metrics_json) else {
+                continue;
+            };
             let entry = BenchmarkHistoryEntry {
                 id: row.id,
                 timestamp: row.timestamp,
                 benchmark_type: serde_json::from_str(&row.benchmark_type).unwrap_or_default(),
                 model_id: row.model_id,
-                config: serde_json::from_str(&row.config_json)?,
-                summary: serde_json::from_str(&row.summary_json)?,
-                metrics: serde_json::from_str(&row.metrics_json)?,
+                config,
+                summary,
+                metrics,
             };
             entries.push(entry);
         }
@@ -431,9 +454,215 @@ impl HistoryService {
         Ok(results)
     }
 
+    // --- Code History Methods ---
+
+    /// Insert a code benchmark result
+    pub fn insert_code(&self, entry: &CodeHistoryEntry) -> Result<()> {
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
+
+        let benchmark_type = serde_json::to_string(&entry.benchmark_type)?;
+        let language = serde_json::to_string(&entry.language)?;
+        let config_json = serde_json::to_string(&entry.config)?;
+        let summary_json = serde_json::to_string(&entry.summary)?;
+        let metrics_json = serde_json::to_string(&entry.metrics)?;
+
+        conn.execute(
+            "INSERT INTO benchmark_history (id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                entry.id,
+                entry.timestamp,
+                benchmark_type,
+                language,
+                entry.model_id,
+                config_json,
+                summary_json,
+                metrics_json,
+            ],
+        )?;
+
+        tracing::debug!("Saved code benchmark history entry: {}", entry.id);
+        Ok(())
+    }
+
+    /// Get the best pass_rate for a specific model and language (higher is better)
+    pub fn get_best_code_for_model(
+        &self,
+        model_id: &str,
+        language: Language,
+    ) -> Result<Option<f64>> {
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
+        let type_str = serde_json::to_string(&BenchmarkType::Code)?;
+        let lang_str = serde_json::to_string(&language)?;
+
+        let result: std::result::Result<f64, _> = conn.query_row(
+            "SELECT MAX(json_extract(summary_json, '$.pass_rate'))
+             FROM benchmark_history
+             WHERE model_id = ?1 AND benchmark_type = ?2 AND language = ?3",
+            params![model_id, type_str, lang_str],
+            |row| row.get(0),
+        );
+
+        match result {
+            Ok(pass_rate) => Ok(Some(pass_rate)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Get code leaderboard sorted by pass_rate descending (higher is better)
+    pub fn get_code_leaderboard(
+        &self,
+        language: Language,
+        limit: u32,
+    ) -> Result<Vec<(String, f64)>> {
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
+        let type_str = serde_json::to_string(&BenchmarkType::Code)?;
+        let lang_str = serde_json::to_string(&language)?;
+
+        let mut stmt = conn.prepare(
+            "SELECT model_id, MAX(json_extract(summary_json, '$.pass_rate')) as best_pass_rate
+             FROM benchmark_history
+             WHERE benchmark_type = ?1 AND language = ?2
+             GROUP BY model_id
+             ORDER BY best_pass_rate DESC
+             LIMIT ?3",
+        )?;
+
+        let rows = stmt.query_map(params![type_str, lang_str, limit], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
     /// Get the database path
     pub fn db_path(&self) -> &PathBuf {
         &self.db_path
+    }
+
+    /// List audio benchmark history entries
+    pub fn list_audio(&self, limit: Option<u32>) -> Result<Vec<AudioHistoryEntry>> {
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
+        let type_str = serde_json::to_string(&BenchmarkType::Audio)?;
+
+        let mut sql = String::from(
+            "SELECT id, timestamp, benchmark_type, audio_mode, model_id, config_json, summary_json, metrics_json
+             FROM benchmark_history WHERE benchmark_type = ?",
+        );
+
+        sql.push_str(" ORDER BY timestamp DESC");
+
+        if let Some(limit) = limit {
+            sql.push_str(&format!(" LIMIT {}", limit));
+        }
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![type_str], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        })?;
+
+        let mut entries = Vec::new();
+        for row in rows {
+            let (id, timestamp, benchmark_type, audio_mode, model_id, config_json, summary_json, metrics_json) = row?;
+            let Ok(audio_mode) = audio_mode.map(|s| serde_json::from_str(&s)).transpose() else {
+                continue;
+            };
+            let Ok(config) = serde_json::from_str(&config_json) else {
+                continue;
+            };
+            let Ok(summary) = serde_json::from_str(&summary_json) else {
+                continue;
+            };
+            let Ok(metrics) = serde_json::from_str(&metrics_json) else {
+                continue;
+            };
+            entries.push(AudioHistoryEntry {
+                id,
+                timestamp,
+                benchmark_type: serde_json::from_str(&benchmark_type).unwrap_or_default(),
+                audio_mode: audio_mode.unwrap_or(AudioMode::Stt),
+                model_id,
+                config,
+                summary,
+                metrics,
+            });
+        }
+
+        Ok(entries)
+    }
+
+    /// List code benchmark history entries
+    pub fn list_code(&self, limit: Option<u32>) -> Result<Vec<CodeHistoryEntry>> {
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
+        let type_str = serde_json::to_string(&BenchmarkType::Code)?;
+
+        let mut sql = String::from(
+            "SELECT id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json
+             FROM benchmark_history WHERE benchmark_type = ?",
+        );
+
+        sql.push_str(" ORDER BY timestamp DESC");
+
+        if let Some(limit) = limit {
+            sql.push_str(&format!(" LIMIT {}", limit));
+        }
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![type_str], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        })?;
+
+        let mut entries = Vec::new();
+        for row in rows {
+            let (id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json) = row?;
+            let Ok(language) = language.map(|s| serde_json::from_str(&s)).transpose() else {
+                continue;
+            };
+            let Ok(config) = serde_json::from_str(&config_json) else {
+                continue;
+            };
+            let Ok(summary) = serde_json::from_str(&summary_json) else {
+                continue;
+            };
+            let Ok(metrics) = serde_json::from_str(&metrics_json) else {
+                continue;
+            };
+            entries.push(CodeHistoryEntry {
+                id,
+                timestamp,
+                benchmark_type: serde_json::from_str(&benchmark_type).unwrap_or_default(),
+                model_id,
+                language: language.unwrap_or(Language::Python),
+                config,
+                summary,
+                metrics,
+            });
+        }
+
+        Ok(entries)
     }
 
     // --- Effect Detection History Methods ---

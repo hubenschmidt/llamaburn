@@ -106,6 +106,8 @@ pub struct ProblemSet {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CodeBenchmarkMetrics {
     pub problem_id: String,
+    #[serde(default)]
+    pub difficulty: Difficulty,
     pub ttft_ms: f64,
     pub tokens_per_sec: f64,
     pub tests_passed: u32,
@@ -125,6 +127,19 @@ pub struct CodeBenchmarkSummary {
     pub problems_total: u32,
     pub avg_tps: f64,
     pub avg_execution_time_ms: f64,
+    // Difficulty breakdown
+    #[serde(default)]
+    pub easy_solved: u32,
+    #[serde(default)]
+    pub easy_total: u32,
+    #[serde(default)]
+    pub medium_solved: u32,
+    #[serde(default)]
+    pub medium_total: u32,
+    #[serde(default)]
+    pub hard_solved: u32,
+    #[serde(default)]
+    pub hard_total: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

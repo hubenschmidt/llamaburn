@@ -485,6 +485,7 @@ impl BenchmarkPanel {
         self.poll_audio_model_info();
         self.refresh_rankings();
         self.refresh_audio_rankings();
+        self.refresh_code_rankings();
         self.refresh_model_info();
         self.refresh_audio_model_info();
 
