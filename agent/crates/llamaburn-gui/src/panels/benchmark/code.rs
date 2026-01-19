@@ -44,7 +44,7 @@ impl CodeBenchmarkState {
             problem_sets: load_problem_sets_from_disk(),
             selected_problem_set_idx: 0,
             selected_problem_ids: Vec::new(),
-            code_temperature: 0.2,
+            code_temperature: 0.0,
             code_max_tokens: 2048,
             auto_run_tests: true,
             code_running: false,

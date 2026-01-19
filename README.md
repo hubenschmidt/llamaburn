@@ -1,16 +1,16 @@
 # LlamaBurn
 
-A benchmarking, profiling, and stress-testing suite for local LLM models with audio analysis capabilities.
+A multi-modal benchmarking, profiling, and stress-testing suite for self-hosted, open-source LLM and ML models.
 
 ## Features
 
-- **LLM Benchmarking** — TTFT, TPS, inter-token latency metrics
+- **LLM Benchmarking** — TTFT, TPS, inter-token latency metrics on text, audio, image, video, 3D, and code generation modalities.
 - **Stress Testing** — Ramp, sweep, sustained, spike modes
 - **Accuracy Evaluation** — LLM-as-Judge using Claude or GPT
 - **Audio Effect Analysis** — Detect and identify audio effects using ML models
 - **Effects Rack** — Real-time audio processing with delay, reverb, EQ, compression
 - **GPU Monitoring** — Real-time VRAM usage and GPU metrics
-- **Local Model Support** — Auto-discovers Ollama models
+- **Local Model Support** — Auto-discovers Ollama and ML models
 - **Native GUI** — egui/eframe desktop application
 
 ![llamaburn GUI](docs/images/screenshot.png)
@@ -79,7 +79,7 @@ Benchmark LLM code generation capabilities with automatic test execution.
 
 ![Code Generation](docs/images/screenshot-code-test.png)
 
-### COntrol Flow
+### Control Flow
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────┐
@@ -108,6 +108,12 @@ Benchmark LLM code generation capabilities with automatic test execution.
 | Test Validation | ✅ Implemented | Compare output against expected |
 | Metrics Collection | ✅ Implemented | TTFT, TPS, pass rate |
 | LLM-as-Judge | 🔄 Planned | Evaluate code quality with rubric |
+
+### Problem Sets
+
+Algorithmic problems included across three difficulty levels (easy, medium hard).
+
+Use **"Run All"** to benchmark all 30 problems in sequence (Easy → Medium → Hard).
 
 ### Supported Languages
 

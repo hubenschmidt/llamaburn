@@ -147,7 +147,7 @@ fn default_run_tests() -> bool {
 }
 
 fn default_temperature() -> f32 {
-    0.2
+    0.0
 }
 
 fn default_warmup() -> u32 {
