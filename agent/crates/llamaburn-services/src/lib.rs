@@ -7,6 +7,8 @@ mod gpu_monitor;
 mod history;
 mod model_info;
 mod ollama;
+mod problem_loader;
+pub mod runners;
 mod services;
 mod settings;
 mod whisper;
@@ -22,9 +24,15 @@ pub use model_info::{ModelInfo, ModelInfoService};
 pub use ollama::{OllamaClient, OllamaError, OllamaModelDetails, OllamaShowResponse};
 pub use settings::{keys as settings_keys, SettingsError, SettingsService};
 pub use whisper::{get_audio_duration_ms, Segment, TranscriptionResult, WhisperError, WhisperEvent, WhisperService};
+pub use problem_loader::{load_all_problem_sets, load_problem_set, ProblemLoaderError};
 
-// Re-export benchmark types for convenience
-pub use llamaburn_benchmark::{BenchmarkEvent, BenchmarkRunner, BenchmarkSummary};
+// Re-export benchmark runner types
+pub use runners::{
+    BenchmarkEvent, BenchmarkResult, BenchmarkRunner, BenchmarkSummary,
+    CodeBenchmarkEvent, CodeBenchmarkResult, CodeBenchmarkRunner,
+    CodeExecutor, CodeExecutorError, TestResult,
+    run_tests_only, code_output_schema, StructuredCodeResponse,
+};
 
 // Re-export core types for GUI (GUI should only import from services)
 pub use llamaburn_core::{

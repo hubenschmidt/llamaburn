@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use llamaburn_benchmark::load_all_problem_sets;
+use llamaburn_services::load_all_problem_sets;
 use llamaburn_services::ProblemSet;
 
 /// Temperature bucket values

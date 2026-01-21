@@ -2,7 +2,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use llamaburn_benchmark::CodeBenchmarkEvent;
+use llamaburn_services::CodeBenchmarkEvent;
 use llamaburn_services::{CodeBenchmark, Language};
 use llamaburn_services::{BatchCombo, BatchStatus, RunStatus};
 

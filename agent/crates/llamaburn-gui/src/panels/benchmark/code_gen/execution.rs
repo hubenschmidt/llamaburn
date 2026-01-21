@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use llamaburn_benchmark::CodeBenchmarkRunner;
+use llamaburn_services::CodeBenchmarkRunner;
 use llamaburn_services::{CodeBenchmarkConfig, CodeProblem};
 use llamaburn_services::BatchStatus;
 

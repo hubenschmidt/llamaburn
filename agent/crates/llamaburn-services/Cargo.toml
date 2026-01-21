@@ -8,14 +8,19 @@ license.workspace = true
 [dependencies]
 # Core types
 llamaburn-core = { workspace = true }
-llamaburn-benchmark = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }
 tokio-util = "0.7"
+futures = "0.3"
 
-# HTTP client
+# HTTP clients
 ureq = { version = "2.10", features = ["json"] }
+reqwest = { workspace = true }
+
+# Code execution
+tempfile = "3.10"
+regex = "1.10"
 
 # Serialization
 serde = { workspace = true }

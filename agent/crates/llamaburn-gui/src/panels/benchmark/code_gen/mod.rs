@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 
-use llamaburn_benchmark::CodeBenchmarkEvent;
+use llamaburn_services::CodeBenchmarkEvent;
 use llamaburn_services::{
     BenchmarkCombo, CodeBenchmarkMetrics, CodeBenchmarkSummary, CodeProblem, Language, ProblemSet,
 };

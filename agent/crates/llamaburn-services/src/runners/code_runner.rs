@@ -1,5 +1,5 @@
-use crate::code_executor::{CodeExecutor, TestResult};
-use crate::ollama::{code_output_schema, OllamaClient, StructuredCodeResponse};
+use super::code_executor::{CodeExecutor, TestResult};
+use super::ollama_client::{code_output_schema, OllamaClient, StructuredCodeResponse};
 use llamaburn_core::{
     CodeBenchmarkConfig, CodeBenchmarkMetrics, CodeBenchmarkSummary, CodeProblem, Language,
     LlamaBurnError, Result,

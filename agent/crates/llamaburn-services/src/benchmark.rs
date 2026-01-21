@@ -8,7 +8,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
-use llamaburn_benchmark::{BenchmarkEvent, BenchmarkRunner, BenchmarkSummary};
+use crate::runners::{BenchmarkEvent, BenchmarkRunner, BenchmarkSummary};
 use llamaburn_core::{
     AudioBenchmark, AudioMode, TextBenchmarkConfig, BenchmarkType, ModelList, TextBenchmark,
     TextBenchmarkResult, WhisperModel,

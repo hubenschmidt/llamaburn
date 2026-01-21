@@ -1,4 +1,4 @@
-use crate::ollama::OllamaClient;
+use super::ollama_client::OllamaClient;
 use futures::StreamExt;
 use llamaburn_core::{TextBenchmarkConfig, BenchmarkMetrics, LlamaBurnError, Result};
 use serde::{Deserialize, Serialize};

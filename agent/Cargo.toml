@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "crates/llamaburn-core",
-    "crates/llamaburn-benchmark",
     "crates/llamaburn-gui",
     "crates/llamaburn-services",
 ]
@@ -37,5 +36,4 @@ clap = { version = "4.5", features = ["derive"] }
 
 # LlamaBurn crates
 llamaburn-core = { path = "crates/llamaburn-core" }
-llamaburn-benchmark = { path = "crates/llamaburn-benchmark" }
 llamaburn-services = { path = "crates/llamaburn-services" }

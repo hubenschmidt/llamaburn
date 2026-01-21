@@ -2095,23 +2095,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
-name = "llamaburn-benchmark"
-version = "0.1.0"
-dependencies = [
- "futures",
- "llamaburn-core",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.17",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
 name = "llamaburn-core"
 version = "0.1.0"
 dependencies = [
@@ -2130,7 +2113,6 @@ dependencies = [
  "egui_extras",
  "hound",
  "libc",
- "llamaburn-benchmark",
  "llamaburn-services",
  "open",
  "os_pipe",
@@ -2154,16 +2136,19 @@ dependencies = [
  "cpal",
  "dirs",
  "fundsp",
+ "futures",
  "hound",
- "llamaburn-benchmark",
  "llamaburn-core",
  "refinery",
+ "regex",
+ "reqwest",
  "ringbuf",
  "rubato",
  "rusqlite",
  "serde",
  "serde_json",
  "symphonia",
+ "tempfile",
  "thiserror 2.0.17",
  "tokio",
  "tokio-util",

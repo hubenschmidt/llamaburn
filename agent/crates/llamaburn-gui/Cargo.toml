@@ -37,9 +37,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = "0.2"
 
-# LlamaBurn crates
-llamaburn-benchmark = { workspace = true }
-
 # Utilities
 uuid = { version = "1.0", features = ["v4"] }
 open = "5"

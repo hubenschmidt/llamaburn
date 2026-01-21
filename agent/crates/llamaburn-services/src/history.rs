@@ -1,4 +1,4 @@
-use llamaburn_benchmark::BenchmarkSummary;
+use crate::runners::BenchmarkSummary;
 use llamaburn_core::{
     AudioBenchmarkConfig, AudioBenchmarkMetrics, AudioBenchmarkSummary, AudioMode,
     TextBenchmarkConfig, BenchmarkMetrics, BenchmarkType, CodeBenchmarkConfig, CodeBenchmarkMetrics,

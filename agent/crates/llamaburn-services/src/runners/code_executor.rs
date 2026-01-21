@@ -1,7 +1,7 @@
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use crate::ollama::StructuredCodeResponse;
+use super::ollama_client::StructuredCodeResponse;
 use llamaburn_core::{Language, TestCase};
 use tempfile::TempDir;
 use thiserror::Error;
