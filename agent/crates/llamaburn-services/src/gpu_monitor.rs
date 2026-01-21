@@ -2,6 +2,8 @@ use std::process::Command;
 use std::sync::mpsc::{channel, Receiver};
 use std::thread;
 use std::time::Duration;
+
+use llamaburn_core::GpuMetrics;
 use thiserror::Error;
 use tracing::{debug, error, info, instrument, warn};
 
@@ -11,12 +13,6 @@ pub enum GpuMonitorError {
     ExecutionFailed(#[from] std::io::Error),
     #[error("rocm-smi not found - is ROCm installed?")]
     NotFound,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct GpuMetrics {
-    pub raw_output: String,
-    pub connected: bool,
 }
 
 pub struct GpuMonitor {

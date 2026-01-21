@@ -10,10 +10,11 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 use std::time::Instant;
 
+use llamaburn_core::{
+    AudioBenchmarkMetrics, Segment, TranscriptionResult, WhisperEvent, WhisperModel,
+};
 use thiserror::Error;
 use tracing::{debug, info, warn};
-
-use llamaburn_core::{AudioBenchmarkMetrics, WhisperModel};
 
 #[derive(Error, Debug)]
 pub enum WhisperError {
@@ -29,20 +30,6 @@ pub enum WhisperError {
     UnsupportedFormat(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-}
-
-#[derive(Debug, Clone)]
-pub struct TranscriptionResult {
-    pub text: String,
-    pub segments: Vec<Segment>,
-    pub language: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct Segment {
-    pub start_ms: i64,
-    pub end_ms: i64,
-    pub text: String,
 }
 
 /// Create default FullParams for whisper transcription
@@ -78,17 +65,6 @@ fn extract_segments(state: &whisper_rs::WhisperState) -> Result<(String, Vec<Seg
             });
             Ok((text, segs))
         })
-}
-
-#[derive(Debug, Clone)]
-pub enum WhisperEvent {
-    LoadingModel { model: WhisperModel },
-    ModelLoaded { load_time_ms: u64 },
-    LoadingAudio { path: PathBuf },
-    AudioLoaded { duration_ms: u64 },
-    Transcribing,
-    TranscriptionComplete { result: TranscriptionResult, processing_ms: u64 },
-    Error { message: String },
 }
 
 pub struct WhisperService {

@@ -122,6 +122,90 @@ pub const SAMPLE_RATES: &[u32] = &[
 pub const CHANNEL_OPTIONS: &[(u16, &str)] = &[(1, "1 (Mono)"), (2, "2 (Stereo)")];
 
 // =============================================================================
+// Whisper/Transcription Types
+// =============================================================================
+
+#[derive(Debug, Clone)]
+pub struct TranscriptionResult {
+    pub text: String,
+    pub segments: Vec<Segment>,
+    pub language: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct Segment {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum WhisperEvent {
+    LoadingModel { model: super::WhisperModel },
+    ModelLoaded { load_time_ms: u64 },
+    LoadingAudio { path: PathBuf },
+    AudioLoaded { duration_ms: u64 },
+    Transcribing,
+    TranscriptionComplete { result: TranscriptionResult, processing_ms: u64 },
+    Error { message: String },
+}
+
+// =============================================================================
+// Audio Input Types
+// =============================================================================
+
+/// Device type for grouping and display
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceType {
+    /// Direct hardware (hw:)
+    Hardware,
+    /// Plugin hardware with conversion (plughw:) - recommended
+    PluginHardware,
+    /// PulseAudio/PipeWire
+    PulseAudio,
+    /// System default
+    Default,
+    /// Other (surround, dsnoop, etc.)
+    Other,
+}
+
+/// Audio input device information
+#[derive(Debug, Clone)]
+pub struct AudioDevice {
+    /// Raw ALSA device name (e.g., "plughw:CARD=R24,DEV=0")
+    pub name: String,
+    /// Device ID for selection
+    pub id: String,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub is_default: bool,
+    /// Card identifier (e.g., "R24", "Generic_1")
+    pub card_id: Option<String>,
+    /// Friendly card name from ALSA (e.g., "ZOOM R24", "HD-Audio Generic")
+    pub card_name: Option<String>,
+    /// Device type hint for display
+    pub device_type: DeviceType,
+}
+
+/// Configuration for audio capture
+#[derive(Debug, Clone)]
+pub struct AudioCaptureConfig {
+    pub sample_rate: u32,
+    pub sample_format: AudioSampleFormat,
+    pub channels: u16,
+}
+
+impl Default for AudioCaptureConfig {
+    fn default() -> Self {
+        Self {
+            sample_rate: 44100,
+            sample_format: AudioSampleFormat::F32,
+            channels: 2,
+        }
+    }
+}
+
+// =============================================================================
 // Effect Types (some internal dependencies)
 // =============================================================================
 

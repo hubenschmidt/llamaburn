@@ -1,10 +1,13 @@
 use super::ollama_client::OllamaClient;
 use futures::StreamExt;
-use llamaburn_core::{TextBenchmarkConfig, BenchmarkMetrics, LlamaBurnError, Result};
+use llamaburn_core::{BenchmarkMetrics, LlamaBurnError, Result, TextBenchmarkConfig, TextBenchmarkSummary};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+/// Type alias for backward compatibility
+pub type BenchmarkSummary = TextBenchmarkSummary;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -13,7 +16,7 @@ pub enum BenchmarkEvent {
     Iteration { current: u32, total: u32, prompt: String },
     Token { content: String },
     IterationComplete { metrics: BenchmarkMetrics },
-    Done { summary: BenchmarkSummary },
+    Done { summary: TextBenchmarkSummary },
     Cancelled,
     Error { message: String },
 }
@@ -26,17 +29,7 @@ pub struct BenchmarkRunner {
 pub struct BenchmarkResult {
     pub config: TextBenchmarkConfig,
     pub metrics: Vec<BenchmarkMetrics>,
-    pub summary: BenchmarkSummary,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BenchmarkSummary {
-    pub avg_ttft_ms: f64,
-    pub avg_tps: f64,
-    pub avg_total_ms: f64,
-    pub min_tps: f64,
-    pub max_tps: f64,
-    pub iterations: u32,
+    pub summary: TextBenchmarkSummary,
 }
 
 impl BenchmarkRunner {
@@ -283,7 +276,7 @@ impl BenchmarkRunner {
         })
     }
 
-    fn calculate_summary(metrics: &[BenchmarkMetrics]) -> BenchmarkSummary {
+    fn calculate_summary(metrics: &[BenchmarkMetrics]) -> TextBenchmarkSummary {
         let n = metrics.len() as f64;
 
         let avg_ttft_ms = metrics.iter().map(|m| m.time_to_first_token_ms).sum::<f64>() / n;
@@ -299,7 +292,7 @@ impl BenchmarkRunner {
             .map(|m| m.tokens_per_sec)
             .fold(f64::NEG_INFINITY, f64::max);
 
-        BenchmarkSummary {
+        TextBenchmarkSummary {
             avg_ttft_ms,
             avg_tps,
             avg_total_ms,

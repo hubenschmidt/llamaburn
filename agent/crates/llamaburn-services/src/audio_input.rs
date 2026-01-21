@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, FromSample, SampleFormat, StreamConfig};
-// ringbuf removed - cpal::Stream is not Send, using simple Vec buffer in processing thread
+use llamaburn_core::{AudioCaptureConfig, AudioDevice, AudioSampleFormat, DeviceType};
 use thiserror::Error;
 use tracing::{debug, error, info};
 
@@ -32,72 +32,17 @@ pub enum AudioInputError {
     ResampleError(String),
 }
 
-/// Audio input device information
-#[derive(Debug, Clone)]
-pub struct AudioDevice {
-    /// Raw ALSA device name (e.g., "plughw:CARD=R24,DEV=0")
-    pub name: String,
-    /// Device ID for selection
-    pub id: String,
-    pub sample_rate: u32,
-    pub channels: u16,
-    pub is_default: bool,
-    /// Card identifier (e.g., "R24", "Generic_1")
-    pub card_id: Option<String>,
-    /// Friendly card name from ALSA (e.g., "ZOOM R24", "HD-Audio Generic")
-    pub card_name: Option<String>,
-    /// Device type hint for display
-    pub device_type: DeviceType,
+/// Extension trait for cpal-specific AudioSampleFormat conversion
+trait AudioSampleFormatExt {
+    fn to_cpal(self) -> SampleFormat;
 }
 
-/// Device type for grouping and display
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeviceType {
-    /// Direct hardware (hw:)
-    Hardware,
-    /// Plugin hardware with conversion (plughw:) - recommended
-    PluginHardware,
-    /// PulseAudio/PipeWire
-    PulseAudio,
-    /// System default
-    Default,
-    /// Other (surround, dsnoop, etc.)
-    Other,
-}
-
-/// Audio sample format for recording
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AudioSampleFormat {
-    I16,
-    I24,
-    #[default]
-    F32,
-}
-
-impl AudioSampleFormat {
+impl AudioSampleFormatExt for AudioSampleFormat {
     fn to_cpal(self) -> SampleFormat {
         match self {
             AudioSampleFormat::I16 => SampleFormat::I16,
             AudioSampleFormat::I24 => SampleFormat::I32, // cpal uses I32 for 24-bit
             AudioSampleFormat::F32 => SampleFormat::F32,
-        }
-    }
-}
-
-/// Configuration for audio capture
-#[derive(Debug, Clone)]
-pub struct AudioCaptureConfig {
-    pub sample_rate: u32,
-    pub sample_format: AudioSampleFormat,
-    pub channels: u16,
-}
-
-impl Default for AudioCaptureConfig {
-    fn default() -> Self {
-        Self {
-            sample_rate: 44100,
-            sample_format: AudioSampleFormat::F32,
-            channels: 2,
         }
     }
 }
