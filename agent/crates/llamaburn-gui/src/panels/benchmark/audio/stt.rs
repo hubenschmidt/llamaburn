@@ -84,7 +84,6 @@ impl AudioBenchmarkPanel {
             if let Some(entry) = self.build_audio_history_entry(&result) {
                 actions.push(AudioAction::SaveHistory(entry));
             }
-            actions.push(AudioAction::RefreshRankings);
         }
 
         actions

@@ -18,11 +18,6 @@ pub struct TextBenchmark {
     pub result: Option<TextBenchmarkResult>,
     pub collected_metrics: Vec<BenchmarkMetrics>,
 
-    pub model_best_tps: Option<f64>,
-    pub all_time_best: Option<(String, f64)>,
-    pub leaderboard: Vec<(String, f64)>,
-    pub last_model_for_rankings: String,
-
     pub last_model_for_info: String,
 }
 
@@ -68,16 +63,5 @@ impl TextBenchmark {
 
     pub fn add_metrics(&mut self, metrics: BenchmarkMetrics) {
         self.collected_metrics.push(metrics);
-    }
-
-    pub fn set_rankings(
-        &mut self,
-        model_best: Option<f64>,
-        all_time: Option<(String, f64)>,
-        leaderboard: Vec<(String, f64)>,
-    ) {
-        self.model_best_tps = model_best;
-        self.all_time_best = all_time;
-        self.leaderboard = leaderboard;
     }
 }

@@ -5,10 +5,7 @@ use std::sync::mpsc::Receiver;
 use eframe::egui::{self, Widget};
 
 use llamaburn_services::{ModelList, TextBenchmark};
-use llamaburn_services::{
-    BenchmarkEvent, BenchmarkService, HistoryService, ModelInfo, ModelInfoService,
-    OllamaClient, OllamaError,
-};
+use llamaburn_services::{BenchmarkEvent, BenchmarkService, HistoryService, OllamaClient, OllamaError};
 
 use crate::panels::benchmark::components::{ModelSelector, TransportControls};
 
@@ -19,9 +16,7 @@ pub struct ConfigView<'a> {
     model_list: &'a mut ModelList,
     benchmark_rx: &'a mut Option<Receiver<BenchmarkEvent>>,
     preload_rx: &'a mut Option<Receiver<Result<(), OllamaError>>>,
-    model_info_rx: &'a mut Option<Receiver<Option<ModelInfo>>>,
     ollama: &'a OllamaClient,
-    model_info_service: &'a ModelInfoService,
     history: &'a HistoryService,
 }
 
@@ -32,9 +27,7 @@ impl<'a> ConfigView<'a> {
         model_list: &'a mut ModelList,
         benchmark_rx: &'a mut Option<Receiver<BenchmarkEvent>>,
         preload_rx: &'a mut Option<Receiver<Result<(), OllamaError>>>,
-        model_info_rx: &'a mut Option<Receiver<Option<ModelInfo>>>,
         ollama: &'a OllamaClient,
-        model_info_service: &'a ModelInfoService,
         history: &'a HistoryService,
     ) -> Self {
         Self {
@@ -43,9 +36,7 @@ impl<'a> ConfigView<'a> {
             model_list,
             benchmark_rx,
             preload_rx,
-            model_info_rx,
             ollama,
-            model_info_service,
             history,
         }
     }
@@ -70,15 +61,15 @@ impl Widget for ConfigView<'_> {
                         self.model_list.select(model_name.clone());
                         *self.preload_rx = Some(self.ollama.preload_model_async(&model_name));
                         self.model_list.start_preload(&model_name);
-                        self.text.append_output(&format!("Loading {} into VRAM...\n", model_name));
-                        // Fetch model info
-                        *self.model_info_rx = Some(self.model_info_service.fetch_info_async(&model_name));
+                        self.text
+                            .append_output(&format!("Loading {} into VRAM...\n", model_name));
                     }
                     if selector_resp.unload_clicked && !self.model_list.selected.is_empty() {
                         let model_name = self.model_list.selected.clone();
                         let _ = self.ollama.unload_model_async(&model_name);
                         self.model_list.selected.clear();
-                        self.text.append_output(&format!("Unloading {}...\n", model_name));
+                        self.text
+                            .append_output(&format!("Unloading {}...\n", model_name));
                     }
                     ui.end_row();
 
@@ -127,10 +118,8 @@ impl Widget for ConfigView<'_> {
             }
 
             // Poll for benchmark events
-            self.service.poll_text_benchmark(self.text, self.benchmark_rx, self.history);
-
-            // Refresh rankings if needed
-            self.service.maybe_refresh_text_rankings(self.text, self.model_list, self.history);
+            self.service
+                .poll_text_benchmark(self.text, self.benchmark_rx, self.history);
         });
 
         response.response

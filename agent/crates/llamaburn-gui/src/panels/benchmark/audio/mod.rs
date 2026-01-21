@@ -12,7 +12,7 @@ use std::time::Instant;
 use eframe::egui;
 
 use llamaburn_services::{
-    AudioBenchmarkResult, AudioMode, AudioSourceMode, BenchmarkType, EffectDetectionResult,
+    AudioBenchmarkResult, AudioSourceMode, BenchmarkType, EffectDetectionResult,
     EffectDetectionTool, WhisperModel,
 };
 use llamaburn_services::{
@@ -20,7 +20,6 @@ use llamaburn_services::{
     OllamaClient, OllamaError, WhisperService,
 };
 
-use super::components::rankings_widget;
 
 // ============================================================================
 // Audio Types
@@ -164,7 +163,6 @@ pub enum AudioAction {
 
     // History operations
     SaveHistory(AudioHistoryEntry),
-    RefreshRankings,
 
     // Model management
     RefreshModels,
@@ -205,12 +203,6 @@ pub struct AudioBenchmarkPanel {
     pub selected_device_id: Option<String>,
     pub capture_duration_secs: u32,
     pub loading_devices: bool,
-
-    // Rankings
-    pub model_best_rtf: Option<f64>,
-    pub all_time_best_audio: Option<(String, f64)>,
-    pub audio_leaderboard: Vec<(String, f64)>,
-    pub last_whisper_model_for_rankings: Option<WhisperModel>,
 
     // Model info
     pub model_info: Option<ModelInfo>,
@@ -284,11 +276,6 @@ impl AudioBenchmarkPanel {
             selected_device_id: None,
             capture_duration_secs: 10,
             loading_devices: false,
-
-            model_best_rtf: None,
-            all_time_best_audio: None,
-            audio_leaderboard: Vec::new(),
-            last_whisper_model_for_rankings: None,
 
             model_info: None,
             last_model_for_info: None,
@@ -734,21 +721,6 @@ impl AudioBenchmarkPanel {
         actions
     }
 
-    pub fn render_rankings(&self, ui: &mut egui::Ui) {
-        let all_time_ref = self
-            .all_time_best_audio
-            .as_ref()
-            .map(|(m, r)| (m.as_str(), r));
-
-        rankings_widget(
-            ui,
-            self.model_best_rtf.as_ref(),
-            all_time_ref,
-            &self.audio_leaderboard,
-            |rtf| format!("{:.3}x RTF", rtf),
-        );
-    }
-
     fn render_transport_controls(&mut self, ui: &mut egui::Ui, selected_model: &str) -> Vec<AudioAction> {
         let mut actions = Vec::new();
         let is_recording = self.running || self.effect_detection_running || self.live_recording;
@@ -861,39 +833,6 @@ impl AudioBenchmarkPanel {
         vec![AudioAction::SetProgress("Stopped".to_string())]
     }
 
-    pub fn refresh_rankings(&mut self, history_service: &HistoryService) {
-        let Some(model) = self.whisper_model else {
-            return;
-        };
-
-        if self.last_whisper_model_for_rankings == Some(model) {
-            return;
-        }
-
-        self.last_whisper_model_for_rankings = Some(model);
-
-        let model_id = format!("whisper-{}", model.label().to_lowercase());
-
-        self.model_best_rtf = history_service
-            .get_best_audio_for_model(&model_id, AudioMode::Stt)
-            .ok()
-            .flatten();
-
-        self.all_time_best_audio = history_service
-            .get_all_time_best_audio(AudioMode::Stt)
-            .ok()
-            .flatten();
-
-        self.audio_leaderboard = history_service
-            .get_audio_leaderboard(AudioMode::Stt, 5)
-            .unwrap_or_default();
-    }
-
-    pub fn force_refresh_rankings(&mut self, history_service: &HistoryService) {
-        self.last_whisper_model_for_rankings = None;
-        self.refresh_rankings(history_service);
-    }
-
     pub fn refresh_model_info(&mut self) {
         let Some(model) = self.whisper_model else {
             return;
@@ -920,20 +859,4 @@ impl AudioBenchmarkPanel {
         self.model_info = info;
         self.model_info_rx = None;
     }
-}
-
-/// Render audio rankings from the AudioBenchmark model (MVC pattern)
-pub fn render_audio_rankings(model: &llamaburn_services::AudioBenchmark, ui: &mut egui::Ui) {
-    let all_time_ref = model
-        .all_time_best
-        .as_ref()
-        .map(|(m, r)| (m.as_str(), r));
-
-    rankings_widget(
-        ui,
-        model.model_best_rtf.as_ref(),
-        all_time_ref,
-        &model.leaderboard,
-        |rtf| format!("{:.3}x RTF", rtf),
-    );
 }

@@ -106,7 +106,6 @@ impl CodeGenBenchmarkPanel {
                     if let Some(entry) = self.build_history_entry(&summary) {
                         actions.push(CodeGenAction::SaveCodeHistory(entry));
                     }
-                    actions.push(CodeGenAction::RefreshRankings);
                     actions.push(CodeGenAction::AppendOutput(format!(
                         "\n=== Benchmark Complete ===\nPass Rate: {:.1}%\nSolved: {}/{}\n",
                         summary.pass_rate * 100.0,

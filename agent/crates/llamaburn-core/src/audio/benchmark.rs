@@ -47,11 +47,6 @@ pub struct AudioBenchmark {
     pub result: Option<AudioBenchmarkResult>,
     pub collected_metrics: Vec<AudioBenchmarkMetrics>,
 
-    pub model_best_rtf: Option<f64>,
-    pub all_time_best: Option<(String, f64)>,
-    pub leaderboard: Vec<(String, f64)>,
-    pub last_model_for_rankings: Option<WhisperModel>,
-
     pub last_model_for_info: Option<WhisperModel>,
 
     #[serde(skip)]
@@ -109,17 +104,6 @@ impl AudioBenchmark {
 
     pub fn add_metrics(&mut self, metrics: AudioBenchmarkMetrics) {
         self.collected_metrics.push(metrics);
-    }
-
-    pub fn set_rankings(
-        &mut self,
-        model_best: Option<f64>,
-        all_time: Option<(String, f64)>,
-        leaderboard: Vec<(String, f64)>,
-    ) {
-        self.model_best_rtf = model_best;
-        self.all_time_best = all_time;
-        self.leaderboard = leaderboard;
     }
 
     pub fn append_output(&mut self, s: &str) {

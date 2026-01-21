@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use crate::{BenchmarkService, HistoryService, ModelInfoService, OllamaClient};
+use crate::{BenchmarkService, HistoryService, OllamaClient};
 
 /// Central service container - stateless controllers
 ///
@@ -16,7 +16,6 @@ pub struct Services {
     pub benchmark: BenchmarkService,
     pub history: Arc<HistoryService>,
     pub ollama: OllamaClient,
-    pub model_info: ModelInfoService,
 }
 
 impl Services {
@@ -29,7 +28,6 @@ impl Services {
             benchmark: BenchmarkService::new("http://localhost:11434"),
             history,
             ollama: OllamaClient::default(),
-            model_info: ModelInfoService::default(),
         }
     }
 
@@ -44,7 +42,6 @@ impl Services {
             benchmark: BenchmarkService::new(&host),
             history,
             ollama: OllamaClient::new(&host),
-            model_info: ModelInfoService::default(),
         }
     }
 }
@@ -202,10 +199,6 @@ impl Services {
     /// Clear text benchmark state (for tab switching)
     pub fn clear_text_state(&self, models: &mut AppModels) {
         models.text.last_model_for_info.clear();
-        models.text.last_model_for_rankings.clear();
-        models.text.model_best_tps = None;
-        models.text.all_time_best = None;
-        models.text.leaderboard.clear();
     }
 }
 

@@ -11,9 +11,7 @@ use llamaburn_services::AppModels;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use llamaburn_services::{
-    BenchmarkEvent, BenchmarkType, ModelInfo, OllamaError, Services,
-};
+use llamaburn_services::{BenchmarkEvent, BenchmarkType, OllamaError, Services};
 
 // Re-export panel types
 pub use audio::AudioBenchmarkPanel;
@@ -25,7 +23,6 @@ pub struct BenchmarkPanel {
     // =========================================
     model_rx: Option<Receiver<Result<Vec<String>, OllamaError>>>,
     model_preload_rx: Option<Receiver<Result<(), OllamaError>>>,
-    model_info_rx: Option<Receiver<Option<ModelInfo>>>,
     text_rx: Option<Receiver<BenchmarkEvent>>,
 
     // Legacy field (async cancellation)
@@ -75,7 +72,6 @@ impl BenchmarkPanel {
             // Async receivers
             model_rx,
             model_preload_rx: None,
-            model_info_rx: None,
             text_rx: None,
 
             // Legacy field (async cancellation)
@@ -233,34 +229,6 @@ impl BenchmarkPanel {
         }
     }
 
-    fn poll_model_info(&mut self, app_models: &mut AppModels, services: &Services) {
-        let Some(rx) = self.model_info_rx.take() else {
-            return;
-        };
-
-        match rx.try_recv() {
-            Ok(info) => {
-                let core_info = info.map(|i| llamaburn_services::CoreModelInfo {
-                    config: llamaburn_services::ModelConfig {
-                        id: i.model_id.clone(),
-                        name: i.model_id.clone(),
-                        model: i.model_id,
-                        api_base: None,
-                        quantization: i.quantization,
-                    },
-                    size_bytes: None,
-                    parameter_count: i.parameter_size,
-                    context_length: None,
-                });
-                services.set_model_info(app_models, core_info);
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                self.model_info_rx = Some(rx);
-            }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
-        }
-    }
-
     fn maybe_auto_start_combo(&mut self, app_models: &mut AppModels, services: &Services) {
         if self.code_panel.current_combo.is_none() {
             return;
@@ -365,9 +333,6 @@ impl BenchmarkPanel {
                 CodeGenAction::RefreshModels => {
                     self.refresh_models(app_models, services);
                 }
-                CodeGenAction::RefreshRankings => {
-                    self.code_panel.force_refresh_rankings(&mut app_models.code, &services.history);
-                }
                 CodeGenAction::PreloadModel(model_name) => {
                     services.start_preload(app_models, &model_name);
                     self.model_preload_rx = Some(services.ollama.preload_model_async(&model_name));
@@ -410,11 +375,6 @@ impl BenchmarkPanel {
                         info!("Saved audio benchmark result to history: {}", entry.id);
                     }
                 }
-                audio::AudioAction::RefreshRankings => {
-                    services
-                        .benchmark
-                        .force_refresh_audio_rankings(&mut app_models.audio, &services.history);
-                }
                 audio::AudioAction::RefreshModels => {
                     self.refresh_models(app_models, services);
                 }
@@ -430,7 +390,6 @@ impl BenchmarkPanel {
         // Poll for updates
         self.poll_models(app_models, services);
         self.poll_model_preload(app_models, services);
-        self.poll_model_info(app_models, services);
 
         // Poll code panel and process actions
         let code_actions = self.code_panel.poll(&mut app_models.code);
@@ -457,12 +416,6 @@ impl BenchmarkPanel {
 
         // Sync audio model with audio_panel state (until fully migrated)
         app_models.audio.whisper_model = self.audio_panel.whisper_model;
-
-        // Rankings refresh
-        services
-            .benchmark
-            .maybe_refresh_audio_rankings(&mut app_models.audio, &services.history);
-        self.code_panel.refresh_rankings(&mut app_models.code, &services.history);
 
         // Audio model info refresh
         self.audio_panel.refresh_model_info();
@@ -493,12 +446,11 @@ impl BenchmarkPanel {
                     let available = ui.available_width();
                     let spacing = 15.0;
                     let separator_width = 10.0;
-                    let total_spacing = (spacing * 4.0) + (separator_width * 2.0);
+                    let total_spacing = (spacing * 2.0) + separator_width;
                     let content_width = (available - total_spacing).max(300.0);
 
-                    let config_width = content_width * 0.35;
-                    let info_width = content_width * 0.30;
-                    let results_width = content_width * 0.35;
+                    let config_width = content_width * 0.55;
+                    let info_width = content_width * 0.45;
 
                     let column_height = panel_height - 30.0;
                     ui.horizontal(|ui| {
@@ -513,31 +465,20 @@ impl BenchmarkPanel {
                         ui.separator();
                         ui.add_space(spacing);
 
-                        // Center: Model Info
-                        ui.vertical(|ui| {
-                            ui.set_width(info_width);
-                            ui.set_min_height(column_height);
-                            self.render_model_info(ui, app_models, services);
+                        // Right: Model Info (Audio only)
+                        if benchmark_type == BenchmarkType::Audio {
+                            ui.vertical(|ui| {
+                                ui.set_width(info_width);
+                                ui.set_min_height(column_height);
+                                self.render_model_info(ui, app_models, services);
 
-                            if benchmark_type == BenchmarkType::Audio {
                                 ui.add_space(10.0);
                                 ui.separator();
                                 ui.add_space(5.0);
                                 self.audio_panel
                                     .render_model_downloads(ui, &mut app_models.audio.live_output);
-                            }
-                        });
-
-                        ui.add_space(spacing);
-                        ui.separator();
-                        ui.add_space(spacing);
-
-                        // Right: Results
-                        ui.vertical(|ui| {
-                            ui.set_width(results_width);
-                            ui.set_min_height(column_height);
-                            self.render_results(ui, app_models, services);
-                        });
+                            });
+                        }
                     });
                 });
 
@@ -670,10 +611,6 @@ impl BenchmarkPanel {
                     services.clear_text_state(app_models);
                     self.audio_panel.model_info = None;
                     self.audio_panel.last_model_for_info = None;
-                    self.audio_panel.model_best_rtf = None;
-                    self.audio_panel.all_time_best_audio = None;
-                    self.audio_panel.audio_leaderboard.clear();
-                    self.audio_panel.last_whisper_model_for_rankings = None;
                 }
             }
         });
@@ -712,9 +649,7 @@ impl BenchmarkPanel {
                     models,
                     &mut self.text_rx,
                     &mut self.model_preload_rx,
-                    &mut self.model_info_rx,
                     &services.ollama,
-                    &services.model_info,
                     &services.history,
                 ));
             }
@@ -840,32 +775,6 @@ impl BenchmarkPanel {
         }
     }
 
-    fn render_results(&self, ui: &mut egui::Ui, app_models: &AppModels, services: &Services) {
-        ui.label(
-            egui::RichText::new("Results")
-                .heading()
-                .color(egui::Color32::GRAY),
-        );
-
-        match self.benchmark_type {
-            BenchmarkType::Code => {
-                self.code_panel.render_code_results(ui, &app_models.code);
-            }
-            BenchmarkType::Text => {
-                if let Some(r) = services.get_text_result(app_models) {
-                    ui.label(format!("Avg TPS: {:.2} t/s", r.avg_tps));
-                    ui.label(format!("Avg TTFT: {:.2} ms", r.avg_ttft_ms));
-                    ui.label(format!("Avg Total: {:.2} ms", r.avg_total_ms));
-                    ui.label(format!("Min/Max TPS: {:.1}/{:.1}", r.min_tps, r.max_tps));
-                    ui.label(format!("Iterations: {}", r.iterations));
-                }
-            }
-            _ => {}
-        }
-
-        self.render_rankings(ui, app_models);
-    }
-
     #[allow(dead_code)]
     fn unload_model(&mut self, app_models: &mut AppModels, services: &Services) {
         let model = services.get_selected_model(app_models);
@@ -959,22 +868,6 @@ impl BenchmarkPanel {
                     ui.label(format!("Quant: {}", quant));
                 }
             }
-        }
-    }
-
-    fn render_rankings(&self, ui: &mut egui::Ui, app_models: &AppModels) {
-        ui.add_space(15.0);
-        ui.label(
-            egui::RichText::new("Rankings")
-                .heading()
-                .color(egui::Color32::GRAY),
-        );
-
-        match self.benchmark_type {
-            BenchmarkType::Text => { ui.add(text::RankingsView::new(&app_models.text)); }
-            BenchmarkType::Audio => audio::render_audio_rankings(&app_models.audio, ui),
-            BenchmarkType::Code => self.code_panel.render_code_rankings(ui, &app_models.code),
-            _ => {}
         }
     }
 

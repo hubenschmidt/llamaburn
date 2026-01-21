@@ -10,8 +10,7 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::runners::{BenchmarkEvent, BenchmarkRunner, BenchmarkSummary};
 use llamaburn_core::{
-    AudioBenchmark, AudioMode, TextBenchmarkConfig, BenchmarkType, ModelList, TextBenchmark,
-    TextBenchmarkResult, WhisperModel,
+    TextBenchmarkConfig, BenchmarkType, ModelList, TextBenchmark, TextBenchmarkResult,
 };
 
 use crate::{BenchmarkHistoryEntry, HistoryService};
@@ -194,7 +193,6 @@ impl BenchmarkService {
                 text.set_result(result);
                 *rx = None;
                 text.set_progress(String::new());
-                text.last_model_for_rankings.clear();
             }
             BenchmarkEvent::Cancelled => {
                 text.append_output("\n⚠️ Benchmark cancelled\n");
@@ -235,89 +233,6 @@ impl BenchmarkService {
         } else {
             info!("Saved benchmark result to history: {}", entry.id);
         }
-    }
-
-    /// Check if rankings need refresh, and refresh if needed
-    pub fn maybe_refresh_text_rankings(
-        &self,
-        text: &mut TextBenchmark,
-        models: &ModelList,
-        history: &HistoryService,
-    ) {
-        let selected = &models.selected;
-        if selected.is_empty() || *selected == text.last_model_for_rankings {
-            return;
-        }
-        text.last_model_for_rankings = selected.clone();
-        Self::refresh_text_rankings(text, selected, history);
-    }
-
-    /// Force refresh rankings
-    pub fn refresh_text_rankings(
-        text: &mut TextBenchmark,
-        selected_model: &str,
-        history: &HistoryService,
-    ) {
-        let model_best = history
-            .get_best_for_model(selected_model, BenchmarkType::Text)
-            .ok()
-            .flatten();
-
-        let leaderboard = history
-            .get_leaderboard(BenchmarkType::Text, 10)
-            .unwrap_or_default();
-
-        let all_time = leaderboard.first().cloned();
-        text.set_rankings(model_best, all_time, leaderboard);
-    }
-
-    // =========================================================================
-    // Audio Benchmark Controller Methods
-    // =========================================================================
-
-    /// Check if audio rankings need refresh, and refresh if needed
-    pub fn maybe_refresh_audio_rankings(&self, audio: &mut AudioBenchmark, history: &HistoryService) {
-        let Some(whisper_model) = audio.whisper_model else {
-            return;
-        };
-
-        if audio.last_model_for_rankings == Some(whisper_model) {
-            return;
-        }
-
-        audio.last_model_for_rankings = Some(whisper_model);
-        Self::refresh_audio_rankings(audio, whisper_model, history);
-    }
-
-    /// Force refresh audio rankings
-    pub fn refresh_audio_rankings(
-        audio: &mut AudioBenchmark,
-        whisper_model: WhisperModel,
-        history: &HistoryService,
-    ) {
-        let model_id = format!("whisper-{}", whisper_model.label().to_lowercase());
-
-        let model_best = history
-            .get_best_audio_for_model(&model_id, AudioMode::Stt)
-            .ok()
-            .flatten();
-
-        let all_time_best = history
-            .get_all_time_best_audio(AudioMode::Stt)
-            .ok()
-            .flatten();
-
-        let leaderboard = history
-            .get_audio_leaderboard(AudioMode::Stt, 5)
-            .unwrap_or_default();
-
-        audio.set_rankings(model_best, all_time_best, leaderboard);
-    }
-
-    /// Force refresh audio rankings (clears cache first)
-    pub fn force_refresh_audio_rankings(&self, audio: &mut AudioBenchmark, history: &HistoryService) {
-        audio.last_model_for_rankings = None;
-        self.maybe_refresh_audio_rankings(audio, history);
     }
 }
 

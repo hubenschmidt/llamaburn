@@ -3,9 +3,7 @@
 mod config_ui;
 mod error_log;
 mod execution;
-mod history;
 mod polling;
-mod results_ui;
 mod state;
 mod util;
 
@@ -52,7 +50,6 @@ pub enum CodeGenAction {
     AdvanceToNextCombo,
     RunCurrentCombo,
     RefreshModels,
-    RefreshRankings,
 
     // Model management
     PreloadModel(String),
@@ -108,10 +105,6 @@ pub struct CodeGenBenchmarkPanel {
     pub test_failure_log: Vec<ErrorLogEntry>,
     pub test_failure_log_expanded: bool,
 
-    // Rankings
-    pub code_leaderboard: Vec<(String, f64)>,
-    pub last_language_for_rankings: Option<Language>,
-
     // Combo queue for matrix execution
     pub combo_queue: VecDeque<BenchmarkCombo>,
     pub current_combo: Option<BenchmarkCombo>,
@@ -166,9 +159,6 @@ impl CodeGenBenchmarkPanel {
             error_log_expanded: false,
             test_failure_log: Vec::new(),
             test_failure_log_expanded: false,
-
-            code_leaderboard: Vec::new(),
-            last_language_for_rankings: None,
 
             combo_queue: VecDeque::new(),
             current_combo: None,
