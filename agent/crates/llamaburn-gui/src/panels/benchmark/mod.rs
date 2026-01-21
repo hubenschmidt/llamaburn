@@ -11,7 +11,7 @@ use llamaburn_services::AppModels;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use llamaburn_services::{BenchmarkEvent, BenchmarkType, OllamaError, Services};
+use llamaburn_services::{BenchmarkEvent, BenchmarkType, IoServices, OllamaError};
 
 // Re-export panel types
 pub use audio::AudioBenchmarkPanel;
@@ -43,14 +43,14 @@ pub struct BenchmarkPanel {
 }
 
 impl BenchmarkPanel {
-    /// Create a new BenchmarkPanel with services reference.
+    /// Create a new BenchmarkPanel with I/O services reference.
     /// Models are passed to ui() each frame instead of stored.
-    pub fn new(services: &Services) -> Self {
+    pub fn new(io: &IoServices) -> Self {
         // Start loading models
-        let model_rx = Some(services.ollama.fetch_models_async());
+        let model_rx = Some(io.ollama.fetch_models_async());
 
         // Check for incomplete batch sessions on startup
-        let pending_resume_batches = services
+        let pending_resume_batches = io
             .history
             .get_incomplete_batches()
             .unwrap_or_else(|e| {
@@ -59,7 +59,7 @@ impl BenchmarkPanel {
             });
 
         // Load presets on startup
-        let presets = services.history.list_presets().unwrap_or_else(|e| {
+        let presets = io.history.list_presets().unwrap_or_else(|e| {
             warn!("Failed to load presets: {}", e);
             vec![]
         });
@@ -110,70 +110,70 @@ impl BenchmarkPanel {
     }
 
     /// Load presets from database
-    fn load_presets(&mut self, services: &Services) {
-        match services.history.list_presets() {
+    fn load_presets(&mut self, io: &IoServices) {
+        match io.history.list_presets() {
             Ok(presets) => self.code_panel.set_presets(presets),
             Err(e) => warn!("Failed to load presets: {}", e),
         }
     }
 
     /// Get live output for current benchmark type
-    fn current_live_output(&self, app_models: &AppModels, services: &Services) -> String {
+    fn current_live_output(&self, app_models: &AppModels) -> String {
         match self.benchmark_type {
-            BenchmarkType::Text => services.get_text_output(app_models),
-            BenchmarkType::Audio => services.get_audio_output(app_models),
-            BenchmarkType::Code => services.get_code_output(app_models),
-            _ => String::new(), // Not implemented yet
+            BenchmarkType::Text => app_models.text.live_output.clone(),
+            BenchmarkType::Audio => app_models.audio.live_output.clone(),
+            BenchmarkType::Code => app_models.code.live_output.clone(),
+            _ => String::new(),
         }
     }
 
     /// Get progress for current benchmark type
-    fn current_progress(&self, app_models: &AppModels, services: &Services) -> String {
+    fn current_progress(&self, app_models: &AppModels) -> String {
         match self.benchmark_type {
-            BenchmarkType::Text => services.get_text_progress(app_models),
-            BenchmarkType::Audio => services.get_audio_progress(app_models),
-            BenchmarkType::Code => services.get_code_progress(app_models),
-            _ => String::new(), // Not implemented yet
+            BenchmarkType::Text => app_models.text.progress.clone(),
+            BenchmarkType::Audio => app_models.audio.progress.clone(),
+            BenchmarkType::Code => app_models.code.progress.clone(),
+            _ => String::new(),
         }
     }
 
     /// Clear output for current benchmark type
-    fn clear_current_output(&self, app_models: &mut AppModels, services: &Services) {
+    fn clear_current_output(&self, app_models: &mut AppModels) {
         match self.benchmark_type {
-            BenchmarkType::Text => services.clear_text_output(app_models),
-            BenchmarkType::Audio => services.clear_audio_output(app_models),
-            BenchmarkType::Code => services.clear_code_output(app_models),
-            _ => {} // Not implemented yet
+            BenchmarkType::Text => app_models.text.clear_output(),
+            BenchmarkType::Audio => app_models.audio.clear_output(),
+            BenchmarkType::Code => app_models.code.clear_output(),
+            _ => {}
         }
     }
 
-    fn refresh_models(&mut self, app_models: &mut AppModels, services: &Services) {
-        services.start_loading_models(app_models);
-        self.model_rx = Some(services.ollama.fetch_models_async());
+    fn refresh_models(&mut self, app_models: &mut AppModels, io: &IoServices) {
+        app_models.models.start_loading();
+        self.model_rx = Some(io.ollama.fetch_models_async());
     }
 
-    fn poll_models(&mut self, app_models: &mut AppModels, services: &Services) {
+    fn poll_models(&mut self, app_models: &mut AppModels) {
         let Some(rx) = &self.model_rx else { return };
 
         if let Ok(result) = rx.try_recv() {
             match result {
                 Ok(models) => {
-                    services.set_models(app_models, models);
+                    app_models.models.set_models(models);
                     // Clear error on current benchmark type
                     match self.benchmark_type {
-                        BenchmarkType::Text => services.set_text_error(app_models, None),
-                        BenchmarkType::Audio => services.set_audio_error(app_models, None),
-                        BenchmarkType::Code => services.set_code_error(app_models, None),
+                        BenchmarkType::Text => app_models.text.error = None,
+                        BenchmarkType::Audio => app_models.audio.set_error(None),
+                        BenchmarkType::Code => app_models.code.error = None,
                         _ => {}
                     }
                 }
                 Err(e) => {
-                    services.set_loading(app_models, false);
+                    app_models.models.loading = false;
                     let err_msg = Some(e.to_string());
                     match self.benchmark_type {
-                        BenchmarkType::Text => services.set_text_error(app_models, err_msg.clone()),
-                        BenchmarkType::Audio => services.set_audio_error(app_models, err_msg.clone()),
-                        BenchmarkType::Code => services.set_code_error(app_models, err_msg),
+                        BenchmarkType::Text => app_models.text.error = err_msg,
+                        BenchmarkType::Audio => app_models.audio.set_error(err_msg),
+                        BenchmarkType::Code => app_models.code.error = err_msg,
                         _ => {}
                     }
                 }
@@ -181,72 +181,72 @@ impl BenchmarkPanel {
         }
     }
 
-    fn poll_model_preload(&mut self, app_models: &mut AppModels, services: &Services) {
+    fn poll_model_preload(&mut self, app_models: &mut AppModels, io: &IoServices) {
         let Some(rx) = self.model_preload_rx.take() else {
             return;
         };
 
         match rx.try_recv() {
             Ok(Ok(())) => {
-                let preloading_name = services.get_preloading_name(app_models);
-                services.finish_preload(app_models);
+                let preloading_name = app_models.models.preloading_name.clone();
+                app_models.models.finish_preload();
                 let msg = format!("✅ {} loaded into VRAM\n", preloading_name);
                 match self.benchmark_type {
-                    BenchmarkType::Text => services.append_text_output(app_models, &msg),
-                    BenchmarkType::Audio => services.append_audio_output(app_models, &msg),
-                    BenchmarkType::Code => services.append_code_output(app_models, &msg),
+                    BenchmarkType::Text => app_models.text.append_output(&msg),
+                    BenchmarkType::Audio => app_models.audio.append_output(&msg),
+                    BenchmarkType::Code => app_models.code.append_output(&msg),
                     _ => {}
                 }
-                self.maybe_auto_start_combo(app_models, services);
+                self.maybe_auto_start_combo(app_models, io);
             }
             Ok(Err(e)) => {
-                let preloading_name = services.get_preloading_name(app_models);
-                services.finish_preload(app_models);
+                let preloading_name = app_models.models.preloading_name.clone();
+                app_models.models.finish_preload();
                 let msg = format!("❌ Failed to load {}: {}\n", preloading_name, e);
                 match self.benchmark_type {
-                    BenchmarkType::Text => services.append_text_output(app_models, &msg),
-                    BenchmarkType::Audio => services.append_audio_output(app_models, &msg),
-                    BenchmarkType::Code => services.append_code_output(app_models, &msg),
+                    BenchmarkType::Text => app_models.text.append_output(&msg),
+                    BenchmarkType::Audio => app_models.audio.append_output(&msg),
+                    BenchmarkType::Code => app_models.code.append_output(&msg),
                     _ => {}
                 }
-                self.maybe_skip_to_next_combo(app_models, services);
+                self.maybe_skip_to_next_combo(app_models, io);
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 self.model_preload_rx = Some(rx);
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                let preloading_name = services.get_preloading_name(app_models);
-                services.finish_preload(app_models);
+                let preloading_name = app_models.models.preloading_name.clone();
+                app_models.models.finish_preload();
                 let msg = format!("❌ Model preload disconnected for {}\n", preloading_name);
                 match self.benchmark_type {
-                    BenchmarkType::Text => services.append_text_output(app_models, &msg),
-                    BenchmarkType::Audio => services.append_audio_output(app_models, &msg),
-                    BenchmarkType::Code => services.append_code_output(app_models, &msg),
+                    BenchmarkType::Text => app_models.text.append_output(&msg),
+                    BenchmarkType::Audio => app_models.audio.append_output(&msg),
+                    BenchmarkType::Code => app_models.code.append_output(&msg),
                     _ => {}
                 }
-                self.maybe_skip_to_next_combo(app_models, services);
+                self.maybe_skip_to_next_combo(app_models, io);
             }
         }
     }
 
-    fn maybe_auto_start_combo(&mut self, app_models: &mut AppModels, services: &Services) {
+    fn maybe_auto_start_combo(&mut self, app_models: &mut AppModels, io: &IoServices) {
         if self.code_panel.current_combo.is_none() {
             return;
         }
         if self.code_panel.selected_problem_ids.is_empty() {
             return;
         }
-        let actions = self.code_panel.run_current(services.ollama.host());
-        self.process_code_actions(actions, app_models, services);
+        let actions = self.code_panel.run_current(io.ollama.host());
+        self.process_code_actions(actions, app_models, io);
     }
 
-    fn maybe_skip_to_next_combo(&mut self, app_models: &mut AppModels, services: &Services) {
+    fn maybe_skip_to_next_combo(&mut self, app_models: &mut AppModels, io: &IoServices) {
         if self.code_panel.combo_queue.is_empty() {
             return;
         }
         self.code_panel.queue_completed += 1;
         let actions = self.code_panel.advance_to_next();
-        self.process_code_actions(actions, app_models, services);
+        self.process_code_actions(actions, app_models, io);
     }
 
     // =========================================================================
@@ -254,20 +254,20 @@ impl BenchmarkPanel {
     // =========================================================================
 
     /// Process actions from CodeGenBenchmarkPanel (like a Redux reducer)
-    fn process_code_actions(&mut self, actions: Vec<CodeGenAction>, app_models: &mut AppModels, services: &Services) {
+    fn process_code_actions(&mut self, actions: Vec<CodeGenAction>, app_models: &mut AppModels, io: &IoServices) {
         for action in actions {
             match action {
                 CodeGenAction::AppendOutput(s) => {
-                    services.append_code_output(app_models, &s);
+                    app_models.code.append_output(&s);
                 }
                 CodeGenAction::SetProgress(s) => {
-                    services.set_code_progress(app_models, s);
+                    app_models.code.set_progress(s);
                 }
                 CodeGenAction::SetError(e) => {
-                    services.set_code_error(app_models, e);
+                    app_models.code.error = e;
                 }
                 CodeGenAction::SaveCodeHistory(entry) => {
-                    if let Err(e) = services.history.insert_code(&entry) {
+                    if let Err(e) = io.history.insert_code(&entry) {
                         warn!("Failed to save code history: {}", e);
                     } else {
                         info!("Saved code benchmark result: {}", entry.id);
@@ -280,7 +280,7 @@ impl BenchmarkPanel {
                     if let Some(entry) =
                         self.code_panel.build_failed_history_entry(&error_message, status)
                     {
-                        if let Err(e) = services.history.insert_code(&entry) {
+                        if let Err(e) = io.history.insert_code(&entry) {
                             warn!("Failed to save failed history: {}", e);
                         } else {
                             info!(
@@ -293,52 +293,52 @@ impl BenchmarkPanel {
                     }
                 }
                 CodeGenAction::InsertBatch(batch) => {
-                    if let Err(e) = services.history.insert_batch(&batch) {
+                    if let Err(e) = io.history.insert_batch(&batch) {
                         warn!("Failed to insert batch: {}", e);
                     }
                 }
                 CodeGenAction::UpdateBatch(batch) => {
-                    if let Err(e) = services.history.update_batch(&batch) {
+                    if let Err(e) = io.history.update_batch(&batch) {
                         warn!("Failed to update batch: {}", e);
                     }
                 }
                 CodeGenAction::DeleteBatch(session_id) => {
-                    if let Err(e) = services.history.delete_batch(&session_id) {
+                    if let Err(e) = io.history.delete_batch(&session_id) {
                         warn!("Failed to delete batch: {}", e);
                     }
                 }
                 CodeGenAction::InsertPreset(preset) => {
-                    if let Err(e) = services.history.insert_preset(&preset) {
+                    if let Err(e) = io.history.insert_preset(&preset) {
                         warn!("Failed to insert preset: {}", e);
                     } else {
                         info!("Saved preset: {}", preset.name);
                     }
                 }
                 CodeGenAction::DeletePreset(preset_id) => {
-                    if let Err(e) = services.history.delete_preset(&preset_id) {
+                    if let Err(e) = io.history.delete_preset(&preset_id) {
                         warn!("Failed to delete preset: {}", e);
                     }
                 }
                 CodeGenAction::LoadPresets => {
-                    self.load_presets(services);
+                    self.load_presets(io);
                 }
                 CodeGenAction::AdvanceToNextCombo => {
                     let next_actions = self.code_panel.advance_to_next();
-                    self.process_code_actions(next_actions, app_models, services);
+                    self.process_code_actions(next_actions, app_models, io);
                 }
                 CodeGenAction::RunCurrentCombo => {
-                    let run_actions = self.code_panel.run_current(services.ollama.host());
-                    self.process_code_actions(run_actions, app_models, services);
+                    let run_actions = self.code_panel.run_current(io.ollama.host());
+                    self.process_code_actions(run_actions, app_models, io);
                 }
                 CodeGenAction::RefreshModels => {
-                    self.refresh_models(app_models, services);
+                    self.refresh_models(app_models, io);
                 }
                 CodeGenAction::PreloadModel(model_name) => {
-                    services.start_preload(app_models, &model_name);
-                    self.model_preload_rx = Some(services.ollama.preload_model_async(&model_name));
+                    app_models.models.start_preload(&model_name);
+                    self.model_preload_rx = Some(io.ollama.preload_model_async(&model_name));
                 }
                 CodeGenAction::SetSelectedModel(model_name) => {
-                    services.select_model(app_models, model_name);
+                    app_models.models.select(model_name);
                 }
                 CodeGenAction::SetCancelToken(token) => {
                     self.cancel_token = Some(token);
@@ -353,57 +353,57 @@ impl BenchmarkPanel {
     }
 
     /// Process actions from AudioBenchmarkPanel (like a Redux reducer)
-    fn process_audio_actions(&mut self, actions: Vec<audio::AudioAction>, app_models: &mut AppModels, services: &Services) {
+    fn process_audio_actions(&mut self, actions: Vec<audio::AudioAction>, app_models: &mut AppModels, io: &IoServices) {
         for action in actions {
             match action {
                 audio::AudioAction::AppendOutput(s) => {
-                    services.append_audio_output(app_models, &s);
+                    app_models.audio.append_output(&s);
                 }
                 audio::AudioAction::ClearOutput => {
-                    services.clear_audio_output(app_models);
+                    app_models.audio.clear_output();
                 }
                 audio::AudioAction::SetProgress(s) => {
-                    services.set_audio_progress(app_models, s);
+                    app_models.audio.set_progress(s);
                 }
                 audio::AudioAction::SetError(e) => {
-                    services.set_audio_error(app_models, e);
+                    app_models.audio.set_error(e);
                 }
                 audio::AudioAction::SaveHistory(entry) => {
-                    if let Err(e) = services.history.insert_audio(&entry) {
+                    if let Err(e) = io.history.insert_audio(&entry) {
                         warn!("Failed to save audio benchmark history: {}", e);
                     } else {
                         info!("Saved audio benchmark result to history: {}", entry.id);
                     }
                 }
                 audio::AudioAction::RefreshModels => {
-                    self.refresh_models(app_models, services);
+                    self.refresh_models(app_models, io);
                 }
                 audio::AudioAction::PreloadLlmModel(model_name) => {
-                    services.start_preload(app_models, &model_name);
-                    self.model_preload_rx = Some(services.ollama.preload_model_async(&model_name));
+                    app_models.models.start_preload(&model_name);
+                    self.model_preload_rx = Some(io.ollama.preload_model_async(&model_name));
                 }
             }
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, app_models: &mut AppModels, services: &Services) {
+    pub fn ui(&mut self, ui: &mut egui::Ui, app_models: &mut AppModels, io: &IoServices) {
         // Poll for updates
-        self.poll_models(app_models, services);
-        self.poll_model_preload(app_models, services);
+        self.poll_models(app_models);
+        self.poll_model_preload(app_models, io);
 
         // Poll code panel and process actions
         let code_actions = self.code_panel.poll(&mut app_models.code);
-        self.process_code_actions(code_actions, app_models, services);
+        self.process_code_actions(code_actions, app_models, io);
 
         // Audio panel polling - process actions
         let audio_actions = self.audio_panel.poll_audio_benchmark();
-        self.process_audio_actions(audio_actions, app_models, services);
+        self.process_audio_actions(audio_actions, app_models, io);
 
         let fx_actions = self.audio_panel.poll_effect_detection();
-        self.process_audio_actions(fx_actions, app_models, services);
+        self.process_audio_actions(fx_actions, app_models, io);
 
         let live_actions = self.audio_panel.poll_live_transcription();
-        self.process_audio_actions(live_actions, app_models, services);
+        self.process_audio_actions(live_actions, app_models, io);
 
         self.audio_panel.poll_effect_tool_availability();
         self.audio_panel.poll_audio_test(&mut app_models.audio.error);
@@ -411,14 +411,8 @@ impl BenchmarkPanel {
         self.audio_panel.poll_level_monitor();
         self.audio_panel.check_capture_duration(&mut app_models.audio.live_output);
 
-        // Model info polling (audio only)
-        self.audio_panel.poll_model_info();
-
         // Sync audio model with audio_panel state (until fully migrated)
         app_models.audio.whisper_model = self.audio_panel.whisper_model;
-
-        // Audio model info refresh
-        self.audio_panel.refresh_model_info();
 
         // Collapsible config panel
         let config_panel_expanded = self.config_panel_expanded;
@@ -432,7 +426,7 @@ impl BenchmarkPanel {
         .show(ui, |ui| {
             self.config_panel_expanded = true;
 
-            self.render_type_selector(ui, app_models, services);
+            self.render_type_selector(ui, app_models);
             ui.add_space(10.0);
 
             // Scrollable config area
@@ -458,7 +452,7 @@ impl BenchmarkPanel {
                         ui.vertical(|ui| {
                             ui.set_width(config_width);
                             ui.set_min_height(column_height);
-                            self.render_config(ui, app_models, services);
+                            self.render_config(ui, app_models, io);
                         });
 
                         ui.add_space(spacing);
@@ -470,7 +464,7 @@ impl BenchmarkPanel {
                             ui.vertical(|ui| {
                                 ui.set_width(info_width);
                                 ui.set_min_height(column_height);
-                                self.render_model_info(ui, app_models, services);
+                                self.render_model_info(ui, app_models);
 
                                 ui.add_space(10.0);
                                 ui.separator();
@@ -494,9 +488,9 @@ impl BenchmarkPanel {
 
         // Show error for current benchmark type
         let err_msg = match self.benchmark_type {
-            BenchmarkType::Text => services.get_text_error(app_models),
-            BenchmarkType::Audio => services.get_audio_error(app_models),
-            BenchmarkType::Code => services.get_code_error(app_models),
+            BenchmarkType::Text => app_models.text.error.clone(),
+            BenchmarkType::Audio => app_models.audio.error.clone(),
+            BenchmarkType::Code => app_models.code.error.clone(),
             _ => None,
         };
         if let Some(err) = err_msg {
@@ -539,7 +533,7 @@ impl BenchmarkPanel {
             _ => 0.0,
         };
 
-        self.render_live_output_with_reserved(ui, app_models, services, effects_rack_height + log_height);
+        self.render_live_output_with_reserved(ui, app_models, effects_rack_height + log_height);
 
         // Error log panel (Code mode only)
         if self.benchmark_type == BenchmarkType::Code {
@@ -594,7 +588,7 @@ impl BenchmarkPanel {
         }
     }
 
-    fn render_type_selector(&mut self, ui: &mut egui::Ui, app_models: &mut AppModels, services: &Services) {
+    fn render_type_selector(&mut self, ui: &mut egui::Ui, app_models: &mut AppModels) {
         ui.horizontal(|ui| {
             for bt in BenchmarkType::all() {
                 let selected = self.benchmark_type == *bt;
@@ -606,17 +600,12 @@ impl BenchmarkPanel {
 
                 if response.clicked() && self.benchmark_type != *bt {
                     self.benchmark_type = *bt;
-                    // Clear model info when switching tabs
-                    services.clear_model_info(app_models);
-                    services.clear_text_state(app_models);
-                    self.audio_panel.model_info = None;
-                    self.audio_panel.last_model_for_info = None;
                 }
             }
         });
     }
 
-    fn render_config(&mut self, ui: &mut egui::Ui, app_models: &mut AppModels, services: &Services) {
+    fn render_config(&mut self, ui: &mut egui::Ui, app_models: &mut AppModels, io: &IoServices) {
         match self.benchmark_type {
             BenchmarkType::Audio => {
                 let actions = {
@@ -624,12 +613,12 @@ impl BenchmarkPanel {
                     let mut shared = audio::AudioSharedState {
                         model_list,
                         audio,
-                        ollama: &services.ollama,
-                        history_service: &services.history,
+                        ollama: &io.ollama,
+                        history_service: &io.history,
                     };
                     self.audio_panel.render_config(ui, &mut shared)
                 };
-                self.process_audio_actions(actions, app_models, services);
+                self.process_audio_actions(actions, app_models, io);
             }
             BenchmarkType::Code => {
                 let actions = {
@@ -638,32 +627,32 @@ impl BenchmarkPanel {
                     };
                     self.code_panel.render_config(ui, &ctx)
                 };
-                self.process_code_actions(actions, app_models, services);
+                self.process_code_actions(actions, app_models, io);
             }
             _ => {
                 // Text: MVC pattern
                 let llamaburn_services::AppModels { text, models, .. } = app_models;
                 ui.add(text::ConfigView::new(
                     text,
-                    &services.benchmark,
+                    &io.benchmark,
                     models,
                     &mut self.text_rx,
                     &mut self.model_preload_rx,
-                    &services.ollama,
-                    &services.history,
+                    &io.ollama,
+                    &io.history,
                 ));
             }
         }
     }
 
-    fn render_live_output_with_reserved(&mut self, ui: &mut egui::Ui, app_models: &mut AppModels, services: &Services, reserved_height: f32) {
-        let progress = self.current_progress(app_models, services);
+    fn render_live_output_with_reserved(&mut self, ui: &mut egui::Ui, app_models: &mut AppModels, reserved_height: f32) {
+        let progress = self.current_progress(app_models);
         let header_text = match progress.is_empty() {
             true => "📋 Live Output".to_string(),
             false => format!("📋 Live Output — {}", progress),
         };
 
-        let output = self.current_live_output(app_models, services);
+        let output = self.current_live_output(app_models);
         let should_clear = ui.horizontal(|ui| {
             let toggle = ui.selectable_label(
                 false,
@@ -682,13 +671,13 @@ impl BenchmarkPanel {
             ui.add_space(10.0);
             let clear = ui.small_button("Clear").clicked();
             if ui.small_button("Export").clicked() && !output.is_empty() {
-                self.export_live_output(app_models, services);
+                self.export_live_output(app_models);
             }
             clear
         }).inner;
 
         if should_clear {
-            self.clear_current_output(app_models, services);
+            self.clear_current_output(app_models);
         }
 
         if !self.live_output_expanded {
@@ -776,22 +765,22 @@ impl BenchmarkPanel {
     }
 
     #[allow(dead_code)]
-    fn unload_model(&mut self, app_models: &mut AppModels, services: &Services) {
-        let model = services.get_selected_model(app_models);
+    fn unload_model(&mut self, app_models: &mut AppModels, io: &IoServices) {
+        let model = app_models.models.selected.clone();
         if model.is_empty() {
             return;
         }
 
         info!("Unloading model: {}", model);
 
-        let _ = services.ollama.unload_model_async(&model);
+        let _ = io.ollama.unload_model_async(&model);
 
-        services.clear_selected_model(app_models);
-        services.clear_model_info(app_models);
-        services.clear_text_state(app_models);
+        app_models.models.selected.clear();
+        app_models.models.model_info = None;
+        app_models.text.last_model_for_info.clear();
     }
 
-    fn render_model_info(&self, ui: &mut egui::Ui, app_models: &AppModels, services: &Services) {
+    fn render_model_info(&self, ui: &mut egui::Ui, app_models: &AppModels) {
         ui.label(
             egui::RichText::new("Model Info")
                 .heading()
@@ -801,47 +790,16 @@ impl BenchmarkPanel {
 
         match self.benchmark_type {
             BenchmarkType::Audio => {
-                let Some(info) = self.audio_panel.model_info.as_ref() else {
-                    ui.label("Select a model to view details");
-                    return;
-                };
-
-                let has_hf = info.hf_repo.is_some();
-                if !has_hf {
-                    return;
-                }
-
-                ui.label(egui::RichText::new("HuggingFace").strong());
-                if let Some(author) = &info.hf_author {
-                    ui.label(format!("Author: {}", author));
-                }
-                if let Some(license) = &info.hf_license {
-                    ui.label(format!("License: {}", license));
-                }
-                if let Some(downloads) = info.hf_downloads {
-                    ui.label(format!("Downloads: {}", format_number(downloads)));
-                }
-                if let Some(likes) = info.hf_likes {
-                    ui.label(format!("Likes: {}", format_number(likes)));
-                }
-                if let Some(pipeline) = &info.hf_pipeline {
-                    ui.label(format!("Pipeline: {}", pipeline));
-                }
-                if let Some(gated) = &info.hf_gated {
-                    ui.label(format!("Gated: {}", gated));
-                }
-                if let Some(modified) = &info.hf_last_modified {
-                    ui.label(format!("Updated: {}", modified));
-                }
-                if let Some(url) = info.hf_url() {
-                    ui.add_space(5.0);
-                    if ui.link("View on HuggingFace").clicked() {
-                        let _ = open::that(&url);
-                    }
+                // Audio uses local Whisper models - no external model info
+                if let Some(model) = self.audio_panel.whisper_model {
+                    ui.label(format!("Model: {}", model.label()));
+                    ui.label(format!("Size: ~{}MB", model.size_mb()));
+                } else {
+                    ui.label("Select a Whisper model");
                 }
             }
             BenchmarkType::Text => {
-                let Some(info) = services.get_model_info(app_models) else {
+                let Some(info) = app_models.models.model_info.as_ref() else {
                     ui.label("Select a model to view details");
                     return;
                 };
@@ -855,7 +813,7 @@ impl BenchmarkPanel {
                 }
             }
             _ => {
-                let Some(info) = services.get_model_info(app_models) else {
+                let Some(info) = app_models.models.model_info.as_ref() else {
                     ui.label("Select a model to view details");
                     return;
                 };
@@ -871,8 +829,8 @@ impl BenchmarkPanel {
         }
     }
 
-    fn export_live_output(&self, app_models: &AppModels, services: &Services) {
-        let content = self.current_live_output(app_models, services);
+    fn export_live_output(&self, app_models: &AppModels) {
+        let content = self.current_live_output(app_models);
         std::thread::spawn(move || {
             let path = rfd::FileDialog::new()
                 .set_title("Export Live Output")

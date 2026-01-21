@@ -5,22 +5,20 @@ mod benchmark;
 mod effect_detection;
 mod gpu_monitor;
 mod history;
-mod model_info;
+mod io_services;
 mod ollama;
 mod problem_loader;
 pub mod runners;
-mod services;
 mod settings;
 mod whisper;
 
 pub use audio_input::{AudioInputError, AudioInputService, StreamHandle};
 pub use audio_output::{AudioOutputError, AudioOutputService, MonitorHandle, PlaybackHandle};
 pub use benchmark::BenchmarkService;
-pub use services::Services;
+pub use io_services::IoServices;
 pub use effect_detection::{EffectDetectionError, EffectDetectionService, get_llm_blind_analysis, build_llm_analysis_prompt};
 pub use gpu_monitor::{GpuMonitor, GpuMonitorError};
 pub use history::{HistoryError, HistoryService};
-pub use model_info::{ModelInfo, ModelInfoService};
 pub use ollama::{OllamaClient, OllamaError, OllamaModelDetails, OllamaShowResponse};
 pub use settings::{keys as settings_keys, SettingsError, SettingsService};
 pub use whisper::{get_audio_duration_ms, WhisperError, WhisperService};
@@ -54,6 +52,6 @@ pub use llamaburn_core::{
     CodeHistoryEntry, EffectDetectionHistoryEntry, HistoryFilter, Preset, RunStatus,
     // System types
     GpuMetrics,
-    // Model types - aliased to avoid conflict with services::ModelInfo
-    ModelConfig, ModelInfo as CoreModelInfo,
+    // Model types
+    ModelConfig, ModelInfo,
 };

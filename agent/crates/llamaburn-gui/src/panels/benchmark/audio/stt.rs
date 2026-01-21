@@ -643,9 +643,6 @@ impl AudioBenchmarkPanel {
         info!("Unloading whisper model: {}", model.label());
         self.whisper_service.unload_model();
         self.whisper_model = None;
-        self.model_info = None;
-        self.last_model_for_info = None;
-        self.model_info_rx = None;
     }
 
     pub fn download_whisper_model(&mut self, model: WhisperModel) -> Vec<AudioAction> {

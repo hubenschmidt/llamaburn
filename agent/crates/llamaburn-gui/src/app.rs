@@ -1,6 +1,6 @@
 use eframe::egui;
 use llamaburn_services::AppModels;
-use llamaburn_services::Services;
+use llamaburn_services::IoServices;
 
 use crate::panels::{
     benchmark::BenchmarkPanel, gpu_monitor::GpuMonitorPanel,
@@ -23,9 +23,11 @@ pub enum Tab {
 pub struct LlamaBurnApp {
     current_tab: Tab,
 
-    // Models and Services (owned directly)
+    // Models owned directly by app
     app_models: AppModels,
-    services: Services,
+
+    // I/O services (no facade methods - just HTTP, DB, async runners)
+    io: IoServices,
 
     // Panels (views)
     gpu_monitor: GpuMonitorPanel,
@@ -36,26 +38,26 @@ pub struct LlamaBurnApp {
 
 impl LlamaBurnApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        // Create services (owned directly)
-        let services = Services::new();
+        // Create I/O services
+        let io = IoServices::new();
 
         // Create models (owned directly)
         let mut app_models = AppModels::new();
 
-        // Start loading models
-        services.start_loading_models(&mut app_models);
+        // Start loading models (direct model access)
+        app_models.models.start_loading();
 
-        // Create benchmark panel (services passed via ui())
-        let benchmark = BenchmarkPanel::new(&services);
+        // Create benchmark panel
+        let benchmark = BenchmarkPanel::new(&io);
 
         Self {
             current_tab: Tab::Home,
             app_models,
             gpu_monitor: GpuMonitorPanel::new(),
             benchmark,
-            history: HistoryPanel::new(services.history.clone()),
-            setup: SetupPanel::new(services.history.clone()),
-            services,
+            history: HistoryPanel::new(io.history.clone()),
+            setup: SetupPanel::new(io.history.clone()),
+            io,
         }
     }
 
@@ -144,7 +146,7 @@ impl eframe::App for LlamaBurnApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.current_tab {
                 Tab::Home => self.render_home(ui),
-                Tab::Benchmark => self.benchmark.ui(ui, &mut self.app_models, &self.services),
+                Tab::Benchmark => self.benchmark.ui(ui, &mut self.app_models, &self.io),
                 Tab::Stress => self.render_stress(ui),
                 Tab::Eval => self.render_eval(ui),
                 Tab::History => self.history.ui(ui),

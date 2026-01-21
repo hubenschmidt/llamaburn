@@ -16,8 +16,8 @@ use llamaburn_services::{
     EffectDetectionTool, WhisperModel,
 };
 use llamaburn_services::{
-    AudioHistoryEntry, EffectDetectionService, HistoryService, ModelInfo, ModelInfoService,
-    OllamaClient, OllamaError, WhisperService,
+    AudioHistoryEntry, EffectDetectionService, HistoryService,
+    OllamaClient, WhisperService,
 };
 
 
@@ -204,11 +204,6 @@ pub struct AudioBenchmarkPanel {
     pub capture_duration_secs: u32,
     pub loading_devices: bool,
 
-    // Model info
-    pub model_info: Option<ModelInfo>,
-    pub last_model_for_info: Option<WhisperModel>,
-    pub model_info_rx: Option<Receiver<Option<ModelInfo>>>,
-
     // Live transcription state (DAW mode)
     pub live_recording: bool,
     pub waveform_peaks: std::collections::VecDeque<(f32, f32)>,
@@ -276,10 +271,6 @@ impl AudioBenchmarkPanel {
             selected_device_id: None,
             capture_duration_secs: 10,
             loading_devices: false,
-
-            model_info: None,
-            last_model_for_info: None,
-            model_info_rx: None,
 
             live_recording: false,
             waveform_peaks: std::collections::VecDeque::new(),
@@ -833,30 +824,4 @@ impl AudioBenchmarkPanel {
         vec![AudioAction::SetProgress("Stopped".to_string())]
     }
 
-    pub fn refresh_model_info(&mut self) {
-        let Some(model) = self.whisper_model else {
-            return;
-        };
-
-        if self.last_model_for_info == Some(model) {
-            return;
-        }
-
-        self.last_model_for_info = Some(model);
-        self.model_info = None;
-        self.model_info_rx = Some(ModelInfoService::fetch_whisper_info_async(model));
-    }
-
-    pub fn poll_model_info(&mut self) {
-        let Some(rx) = &self.model_info_rx else {
-            return;
-        };
-
-        let Ok(info) = rx.try_recv() else {
-            return;
-        };
-
-        self.model_info = info;
-        self.model_info_rx = None;
-    }
 }
