@@ -600,9 +600,9 @@ impl CodeGenBenchmarkPanel {
             });
     }
 
-    /// Render running controls. Returns Some action if Pause clicked.
+    /// Render running controls. Returns Some action if Pause/Cancel clicked.
     fn render_running_controls(&self, ui: &mut egui::Ui) -> Option<CodeGenAction> {
-        let mut pause_action = None;
+        let mut action = None;
 
         // Progress bar
         let completed = self.queue_completed;
@@ -617,10 +617,10 @@ impl CodeGenBenchmarkPanel {
 
         ui.horizontal(|ui| {
             if ui.button("Pause").clicked() {
-                pause_action = Some(CodeGenAction::AppendOutput(String::new())); // Signal pause
+                action = Some(CodeGenAction::PauseMatrix);
             }
             if ui.button("Cancel").clicked() {
-                // Cancel handled by returning specific marker
+                action = Some(CodeGenAction::CancelMatrix);
             }
             ui.spinner();
 
@@ -645,7 +645,7 @@ impl CodeGenBenchmarkPanel {
             ui.label(combo_label);
         });
 
-        pause_action
+        action
     }
 
     /// Calculate ETA label based on average combo duration

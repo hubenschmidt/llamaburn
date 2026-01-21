@@ -50,6 +50,8 @@ pub enum CodeGenAction {
     AdvanceToNextCombo,
     RunCurrentCombo,
     RefreshModels,
+    PauseMatrix,
+    CancelMatrix,
 
     // Model management
     PreloadModel(String),

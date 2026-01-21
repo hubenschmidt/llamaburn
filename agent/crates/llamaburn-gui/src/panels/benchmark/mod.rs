@@ -348,6 +348,38 @@ impl BenchmarkPanel {
                         token.cancel();
                     }
                 }
+                CodeGenAction::PauseMatrix => {
+                    // Save batch state as paused
+                    if let Some(mut batch) = self.code_panel.to_batch_state() {
+                        batch.status = llamaburn_services::BatchStatus::Paused;
+                        let _ = io.history.update_batch(&batch);
+                    }
+                    // Cancel current execution
+                    if let Some(token) = self.cancel_token.take() {
+                        token.cancel();
+                    }
+                    self.code_panel.running = false;
+                    self.code_panel.combo_queue.clear();
+                    self.code_panel.current_combo = None;
+                    app_models.code.append_output("\n=== Matrix Benchmark Paused ===\n");
+                }
+                CodeGenAction::CancelMatrix => {
+                    // Delete batch state on cancel
+                    if let Some(sid) = &self.code_panel.batch_session_id {
+                        let _ = io.history.delete_batch(sid);
+                    }
+                    // Cancel current execution
+                    if let Some(token) = self.cancel_token.take() {
+                        token.cancel();
+                    }
+                    self.code_panel.running = false;
+                    self.code_panel.combo_queue.clear();
+                    self.code_panel.current_combo = None;
+                    self.code_panel.queue_total = 0;
+                    self.code_panel.queue_completed = 0;
+                    self.code_panel.batch_session_id = None;
+                    app_models.code.append_output("\n=== Matrix Benchmark Cancelled ===\n");
+                }
             }
         }
     }

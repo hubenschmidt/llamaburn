@@ -156,26 +156,32 @@ impl CodeBenchmarkRunner {
 
         let generation_time_ms = start.elapsed().as_secs_f64() * 1000.0;
 
+        // Estimate tokens from code length (~4 chars per token)
+        let estimated_tokens = (structured.code.len() as f64 / 4.0).max(1.0);
+        let tokens_per_sec = match generation_time_ms > 0.0 {
+            true => estimated_tokens / (generation_time_ms / 1000.0),
+            false => 0.0,
+        };
+
         // Display the code to Live Output (same code that will be tested)
         let _ = tx.send(CodeBenchmarkEvent::Token {
             content: structured.code.clone(),
         }).await;
 
         // Run tests if enabled - uses same structured response
-        let (tests_passed, tests_total, execution_time_ms, compilation_error, runtime_error) =
+        let (tests_passed, tests_total, compilation_error, runtime_error) =
             match config.run_tests {
-                false => (0, 0, 0.0, None, None),
+                false => (0, 0, None, None),
                 true => {
                     let results = self
                         .run_tests_structured(&structured, config.language, problem, tx)
                         .await;
 
                     match results {
-                        Err(e) => (0, problem.test_cases.len() as u32, 0.0, Some(e), None),
+                        Err(e) => (0, problem.test_cases.len() as u32, Some(e), None),
                         Ok(r) => {
                             let passed = r.iter().filter(|t| t.passed).count() as u32;
                             let total = r.len() as u32;
-                            let exec_time = r.iter().map(|t| t.execution_time_ms).sum();
                             let comp_err = r.iter()
                                 .filter_map(|t| t.error.as_ref())
                                 .find(|e| e.contains("Compilation"))
@@ -184,7 +190,7 @@ impl CodeBenchmarkRunner {
                                 .filter_map(|t| t.error.as_ref())
                                 .find(|e| !e.contains("Compilation"))
                                 .cloned();
-                            (passed, total, exec_time, comp_err, run_err)
+                            (passed, total, comp_err, run_err)
                         }
                     }
                 }
@@ -193,12 +199,12 @@ impl CodeBenchmarkRunner {
         Ok(CodeBenchmarkMetrics {
             problem_id: problem.id.clone(),
             difficulty: problem.difficulty,
-            ttft_ms: generation_time_ms,  // No streaming, TTFT = total generation time
-            tokens_per_sec: 0.0,          // Not measured without streaming
+            ttft_ms: generation_time_ms,
+            tokens_per_sec,
             tests_passed,
             tests_total,
-            execution_time_ms,
-            generated_code: structured.code,  // Same code that was displayed
+            execution_time_ms: generation_time_ms,  // LLM generation time
+            generated_code: structured.code,
             compilation_error,
             runtime_error,
         })
