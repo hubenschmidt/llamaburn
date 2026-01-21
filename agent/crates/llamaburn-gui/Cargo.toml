@@ -38,7 +38,6 @@ tracing-subscriber = { workspace = true }
 tracing-appender = "0.2"
 
 # LlamaBurn crates
-llamaburn-core = { workspace = true }
 llamaburn-benchmark = { workspace = true }
 
 # Utilities
@@ -48,4 +47,5 @@ rfd = "0.14"
 os_pipe = "1.2"
 libc = "0.2"
 hound = "3.5"
+sha2 = "0.10"
 

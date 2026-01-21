@@ -1,6 +1,6 @@
 use crate::ollama::OllamaClient;
 use futures::StreamExt;
-use llamaburn_core::{BenchmarkConfig, BenchmarkMetrics, LlamaBurnError, Result};
+use llamaburn_core::{TextBenchmarkConfig, BenchmarkMetrics, LlamaBurnError, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -24,7 +24,7 @@ pub struct BenchmarkRunner {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkResult {
-    pub config: BenchmarkConfig,
+    pub config: TextBenchmarkConfig,
     pub metrics: Vec<BenchmarkMetrics>,
     pub summary: BenchmarkSummary,
 }
@@ -46,7 +46,7 @@ impl BenchmarkRunner {
         }
     }
 
-    pub async fn run(&self, config: &BenchmarkConfig, prompts: &[String]) -> Result<BenchmarkResult> {
+    pub async fn run(&self, config: &TextBenchmarkConfig, prompts: &[String]) -> Result<BenchmarkResult> {
         tracing::info!("Starting benchmark for model: {}", config.model_id);
 
         // Warmup runs
@@ -76,7 +76,7 @@ impl BenchmarkRunner {
 
     pub async fn run_cancellable(
         &self,
-        config: &BenchmarkConfig,
+        config: &TextBenchmarkConfig,
         prompts: &[String],
         cancel_token: CancellationToken,
     ) -> Result<BenchmarkResult> {
@@ -119,7 +119,7 @@ impl BenchmarkRunner {
 
     pub async fn run_streaming(
         &self,
-        config: &BenchmarkConfig,
+        config: &TextBenchmarkConfig,
         prompts: &[String],
         cancel_token: CancellationToken,
         tx: mpsc::Sender<BenchmarkEvent>,
@@ -228,7 +228,7 @@ impl BenchmarkRunner {
         let _ = tx.send(BenchmarkEvent::Done { summary }).await;
     }
 
-    async fn run_single(&self, config: &BenchmarkConfig, prompt: &str) -> Result<BenchmarkMetrics> {
+    async fn run_single(&self, config: &TextBenchmarkConfig, prompt: &str) -> Result<BenchmarkMetrics> {
         let start = Instant::now();
 
         let response = self

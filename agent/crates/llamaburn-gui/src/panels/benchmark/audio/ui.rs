@@ -1,12 +1,12 @@
 use eframe::egui;
 use tracing::info;
 
-use llamaburn_core::{EffectDetectionTool, WhisperModel};
+use llamaburn_services::{EffectDetectionTool, WhisperModel};
 
-use super::super::{AudioSampleFormat, BenchmarkPanel, CHANNEL_OPTIONS, SAMPLE_RATES};
+use super::{AudioBenchmarkPanel, AudioSampleFormat, AudioTestState, CHANNEL_OPTIONS, SAMPLE_RATES};
 
-impl BenchmarkPanel {
-    pub(in super::super) fn render_quality_settings(&mut self, ui: &mut egui::Ui) {
+impl AudioBenchmarkPanel {
+    pub fn render_quality_settings(&mut self, ui: &mut egui::Ui) {
         egui::Grid::new("quality_grid")
             .num_columns(2)
             .spacing([10.0, 6.0])
@@ -49,7 +49,7 @@ impl BenchmarkPanel {
             });
     }
 
-    pub(in super::super) fn render_recording_settings(&mut self, ui: &mut egui::Ui) {
+    pub fn render_recording_settings(&mut self, ui: &mut egui::Ui) {
         egui::Grid::new("recording_grid")
             .num_columns(2)
             .spacing([10.0, 6.0])
@@ -94,19 +94,19 @@ impl BenchmarkPanel {
             });
     }
 
-    pub(in super::super) fn apply_audio_settings(&mut self) {
+    pub fn apply_audio_settings(&mut self) {
         // Restart live monitor if running to apply new latency
-        let monitor_running = matches!(self.audio_test_state, super::super::AudioTestState::Monitoring);
+        let monitor_running = matches!(self.audio_test_state, AudioTestState::Monitoring);
         if !monitor_running {
             return;
         }
 
         info!("Applying audio settings - restarting live monitor");
         self.stop_live_monitor();
-        self.start_live_monitor();
+        // Note: caller should start monitor again with appropriate error handling
     }
 
-    pub(in super::super) fn render_audio_settings_content(&mut self, ui: &mut egui::Ui) {
+    pub fn render_audio_settings_content(&mut self, ui: &mut egui::Ui, error: &mut Option<String>) {
         // Interface section
         ui.heading("Interface");
         ui.add_space(4.0);
@@ -172,6 +172,10 @@ impl BenchmarkPanel {
                 if ui.button("OK").clicked() {
                     self.show_audio_settings = false;
                     self.apply_audio_settings();
+                    // Restart monitor if it was running
+                    if matches!(self.audio_test_state, AudioTestState::Monitoring) {
+                        self.start_live_monitor(error);
+                    }
                 }
                 if ui.button("Cancel").clicked() {
                     self.show_audio_settings = false;
@@ -180,7 +184,7 @@ impl BenchmarkPanel {
         });
     }
 
-    pub(in super::super) fn render_audio_settings_dialog(&mut self, ctx: &egui::Context) {
+    pub fn render_audio_settings_dialog(&mut self, ctx: &egui::Context, error: &mut Option<String>) {
         if !self.show_audio_settings {
             return;
         }
@@ -192,14 +196,14 @@ impl BenchmarkPanel {
             .collapsible(false)
             .default_width(400.0)
             .show(ctx, |ui| {
-                self.render_audio_settings_content(ui);
+                self.render_audio_settings_content(ui, error);
             });
 
         // Preserve false if OK/Cancel was clicked, or set false if X was clicked
         self.show_audio_settings = self.show_audio_settings && open;
     }
 
-    pub(in super::super) fn render_waveform_display(&mut self, ui: &mut egui::Ui) {
+    pub fn render_waveform_display(&mut self, ui: &mut egui::Ui) {
         // Header with recording indicator and countdown
         ui.horizontal(|ui| {
             let (label_text, label_color) = match self.live_recording {
@@ -323,7 +327,7 @@ impl BenchmarkPanel {
         });
     }
 
-    pub(in super::super) fn render_model_downloads(&mut self, ui: &mut egui::Ui) {
+    pub fn render_model_downloads(&mut self, ui: &mut egui::Ui, live_output: &mut String) {
         // Whisper Models section
         ui.label(egui::RichText::new("Whisper Models").strong());
         ui.add_space(5.0);
@@ -359,7 +363,13 @@ impl BenchmarkPanel {
             });
 
         if let Some(model) = model_to_download {
-            self.download_whisper_model(model);
+            let actions = self.download_whisper_model(model);
+            // Apply actions locally for this UI context
+            for action in actions {
+                if let super::AudioAction::AppendOutput(s) = action {
+                    *live_output = s;
+                }
+            }
         }
 
         // Effect Detection Tools section
@@ -398,7 +408,14 @@ impl BenchmarkPanel {
             });
 
         if let Some(tool) = tool_to_install {
-            self.install_effect_tool(tool);
+            use llamaburn_services::EffectDetectionService;
+            let instructions = EffectDetectionService::install_instructions(tool);
+            info!("Showing install instructions for: {:?}", tool);
+            *live_output = format!(
+                "Install {} with:\n\n{}\n\nRun this in your terminal to install the Python package.",
+                tool.label(),
+                instructions
+            );
         }
 
         // Refresh link
@@ -412,7 +429,7 @@ impl BenchmarkPanel {
         });
     }
 
-    pub(in super::super) fn format_time_ms(ms: u64) -> String {
+    pub fn format_time_ms(ms: u64) -> String {
         let secs = ms / 1000;
         let millis = ms % 1000;
         let mins = secs / 60;

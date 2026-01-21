@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "crates/llamaburn-core",
     "crates/llamaburn-benchmark",
-    "crates/llamaburn-cli",
     "crates/llamaburn-gui",
     "crates/llamaburn-services",
 ]

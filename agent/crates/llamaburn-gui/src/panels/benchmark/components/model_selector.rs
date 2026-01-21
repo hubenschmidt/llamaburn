@@ -1,4 +1,7 @@
-use eframe::egui;
+//! Model selector widget - single model dropdown with load/unload
+
+use eframe::egui::{self, Widget};
+use llamaburn_services::ModelList;
 
 /// Response from the model selector widget
 #[derive(Default)]
@@ -9,9 +12,75 @@ pub struct ModelSelectorResponse {
     pub unload_clicked: bool,
 }
 
-/// Render a model selector combo box with preload spinner and unload button.
-///
-/// Returns which action was taken (if any).
+/// Model selector widget - dropdown with preload spinner and unload button
+pub struct ModelSelector<'a> {
+    model_list: &'a ModelList,
+    id: &'a str,
+    disabled: bool,
+}
+
+impl<'a> ModelSelector<'a> {
+    pub fn new(model_list: &'a ModelList, id: &'a str) -> Self {
+        Self {
+            model_list,
+            id,
+            disabled: false,
+        }
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    /// Render and return response (for handling selection/unload)
+    pub fn show(self, ui: &mut egui::Ui) -> ModelSelectorResponse {
+        let mut response = ModelSelectorResponse::default();
+
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(!self.disabled, |ui| {
+                let selected_text = self.display_text();
+
+                egui::ComboBox::from_id_salt(self.id)
+                    .selected_text(selected_text)
+                    .show_ui(ui, |ui| {
+                        for model in &self.model_list.models {
+                            let is_selected = self.model_list.selected == *model;
+                            if ui.selectable_label(is_selected, model).clicked() {
+                                response.selected = Some(model.clone());
+                            }
+                        }
+                    });
+            });
+
+            if self.model_list.loading || self.model_list.preloading {
+                ui.spinner();
+            }
+
+            let can_unload = !self.model_list.selected.is_empty() && !self.disabled;
+            if ui.add_enabled(can_unload, egui::Button::new("Unload")).clicked() {
+                response.unload_clicked = true;
+            }
+        });
+
+        response
+    }
+
+    fn display_text(&self) -> &str {
+        if self.model_list.loading {
+            return "Loading models...";
+        }
+        if self.model_list.models.is_empty() {
+            return "No models found";
+        }
+        if self.model_list.selected.is_empty() {
+            return "Select model...";
+        }
+        &self.model_list.selected
+    }
+}
+
+// Also keep the function-based API for backwards compatibility during migration
 pub fn render_model_selector(
     ui: &mut egui::Ui,
     id: &str,

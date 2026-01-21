@@ -190,3 +190,32 @@ Future additions:
 - `egui_plot` for charts
 - `wgpu` for 3D rendering
 - AppImage packaging for distribution
+
+### data model + ownership model
+
+  llamaburn-core     →  DEFINES types (AppModels, TextBenchmark, etc.)                                    
+  llamaburn-gui      →  OWNS instances (app_models: AppModels)                                            
+  llamaburn-services →  OPERATES on them (methods take &mut AppModels)                                    
+                                                                                                          
+  Why GUI owns the data:                                                                                  
+                                                                                                          
+  egui's immediate mode requires state to live in the App struct. Can't have Services own it because:
+  1. eframe::App::update(&mut self, ...) - egui gives you &mut self                                       
+  2. You need to read/write state during rendering                                                        
+  3. Rust's borrow checker won't let Services own data that GUI needs to mutate                           
+                                                                                                          
+  The pattern:                                                                                            
+  // GUI owns                                                                                             
+  struct LlamaBurnApp {                                                                                   
+      app_models: AppModels,      // Defined in core, owned here                                          
+      services: Rc<Services>,     // Stateless operations                                                 
+  }                                                                                                       
+                                                                                                          
+  // Services operates                                                                                    
+  impl Services {                                                                                         
+      pub fn run_benchmark(&self, models: &mut AppModels) { ... }                                         
+  }                                                                                                       
+                                                                                                          
+  This is standard for immediate-mode GUIs - the view layer owns state, business logic is stateless.      
+                                                                                                          
+─────

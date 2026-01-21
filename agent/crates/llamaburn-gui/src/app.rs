@@ -1,7 +1,6 @@
-use std::sync::Arc;
-
 use eframe::egui;
-use llamaburn_services::HistoryService;
+use llamaburn_services::AppModels;
+use llamaburn_services::Services;
 
 use crate::panels::{
     benchmark::BenchmarkPanel, gpu_monitor::GpuMonitorPanel,
@@ -23,6 +22,12 @@ pub enum Tab {
 
 pub struct LlamaBurnApp {
     current_tab: Tab,
+
+    // Models and Services (owned directly)
+    app_models: AppModels,
+    services: Services,
+
+    // Panels (views)
     gpu_monitor: GpuMonitorPanel,
     benchmark: BenchmarkPanel,
     history: HistoryPanel,
@@ -31,16 +36,26 @@ pub struct LlamaBurnApp {
 
 impl LlamaBurnApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let history_service = Arc::new(
-            HistoryService::new(None).expect("Failed to initialize history database"),
-        );
+        // Create services (owned directly)
+        let services = Services::new();
+
+        // Create models (owned directly)
+        let mut app_models = AppModels::new();
+
+        // Start loading models
+        services.start_loading_models(&mut app_models);
+
+        // Create benchmark panel (services passed via ui())
+        let benchmark = BenchmarkPanel::new(&services);
 
         Self {
             current_tab: Tab::Home,
+            app_models,
             gpu_monitor: GpuMonitorPanel::new(),
-            benchmark: BenchmarkPanel::new(history_service.clone()),
-            history: HistoryPanel::new(history_service.clone()),
-            setup: SetupPanel::new(history_service),
+            benchmark,
+            history: HistoryPanel::new(services.history.clone()),
+            setup: SetupPanel::new(services.history.clone()),
+            services,
         }
     }
 
@@ -129,7 +144,7 @@ impl eframe::App for LlamaBurnApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.current_tab {
                 Tab::Home => self.render_home(ui),
-                Tab::Benchmark => self.benchmark.ui(ui),
+                Tab::Benchmark => self.benchmark.ui(ui, &mut self.app_models, &self.services),
                 Tab::Stress => self.render_stress(ui),
                 Tab::Eval => self.render_eval(ui),
                 Tab::History => self.history.ui(ui),

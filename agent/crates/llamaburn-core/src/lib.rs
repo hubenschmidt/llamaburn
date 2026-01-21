@@ -1,25 +1,48 @@
+// Domain modules
+pub mod ai;
+pub mod ai_selector;
 pub mod audio;
 pub mod benchmark_type;
-pub mod code_benchmark;
-pub mod config;
+pub mod code;
 pub mod error;
-pub mod metrics;
-pub mod model;
+pub mod text;
 
+pub use ai::{Modality, ModelConfig, ModelInfo};
+pub use ai_selector::ModelList;
 pub use audio::{
-    AppliedEffect, AudioBenchmarkConfig, AudioBenchmarkMetrics, AudioBenchmarkResult,
-    AudioBenchmarkSummary, AudioMode, AudioSource, DetectedEffect, EffectDetectionConfig,
-    EffectDetectionResult, EffectDetectionTool, SignalAnalysis, WhisperModel,
+    AppliedEffect, AudioBenchmark, AudioBenchmarkConfig, AudioBenchmarkMetrics,
+    AudioBenchmarkResult, AudioBenchmarkSummary, AudioMode, AudioSampleFormat, AudioSource,
+    AudioSourceMode, DetectedEffect, EffectDetectionConfig, EffectDetectionResult,
+    EffectDetectionTool, SignalAnalysis, TranscriptionSegment, WhisperModel, CHANNEL_OPTIONS,
+    SAMPLE_RATES,
 };
 pub use benchmark_type::BenchmarkType;
-pub use code_benchmark::{
-    CodeBenchmarkConfig, CodeBenchmarkMetrics, CodeBenchmarkResult, CodeBenchmarkSummary,
-    CodeProblem, Difficulty, EvaluationMode, Language, ProblemSet, TestCase,
-};
-pub use config::{
-    ArrivalPattern, AudioConfig, BenchmarkConfig, CostConfig, DefaultsConfig, LlamaBurnConfig,
-    OllamaConfig, StressConfig, StressMode,
+pub use code::{
+    BenchmarkCombo, CodeBenchmark, CodeBenchmarkConfig, CodeBenchmarkMetrics, CodeBenchmarkResult,
+    CodeBenchmarkSummary, CodeProblem, Difficulty, ErrorLogEntry, EvaluationMode, Language, Preset,
+    ProblemSet, TestCase,
 };
 pub use error::{LlamaBurnError, Result};
-pub use metrics::{AudioMetrics, BenchmarkMetrics, EvalScore, StressMetrics, SystemMetrics};
-pub use model::{Modality, ModelConfig, ModelInfo};
+pub use text::{
+    BenchmarkMetrics, TextBenchmark, TextBenchmarkConfig, TextBenchmarkResult, TextBenchmarkSummary,
+};
+
+/// Root application models container
+#[derive(Debug, Clone, Default)]
+pub struct AppModels {
+    pub models: ModelList,
+    pub text: TextBenchmark,
+    pub audio: AudioBenchmark,
+    pub code: CodeBenchmark,
+}
+
+impl AppModels {
+    pub fn new() -> Self {
+        Self {
+            models: ModelList::new(),
+            text: TextBenchmark::new(),
+            audio: AudioBenchmark::new(),
+            code: CodeBenchmark::new(),
+        }
+    }
+}

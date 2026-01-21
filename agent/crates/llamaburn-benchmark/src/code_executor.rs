@@ -106,8 +106,10 @@ impl CodeExecutor {
         let escaped_input = test_case.input.replace('\\', "\\\\").replace('\'', "\\'");
 
         // Build imports from structured output
+        // Handle collections imports specially (defaultdict, Counter, deque, etc.)
+        let collections_items = ["defaultdict", "Counter", "deque", "OrderedDict", "ChainMap", "namedtuple"];
         let imports = structured.imports.iter()
-            .map(|i| format!("import {}", i))
+            .map(|i| format_python_import(i, &collections_items))
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -268,6 +270,17 @@ func convertArg(arg interface{{}}, targetType reflect.Type) reflect.Value {{
         let binary_path = self.temp_dir.path().join("solution");
         let escaped_input = test_case.input.replace('\\', "\\\\").replace('"', "\\\"");
 
+        // Strip use statements from LLM code (we provide our own to avoid duplicates)
+        let clean_code = structured.code.lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                !trimmed.starts_with("use std::collections")
+                    && !trimmed.starts_with("use std::cmp")
+                    && !trimmed.starts_with("use std::iter")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
         // Count arguments in input JSON array to generate dynamic call
         let arg_count = count_json_args(&test_case.input);
 
@@ -286,6 +299,7 @@ func convertArg(arg interface{{}}, targetType reflect.Type) reflect.Value {{
         let full_code = format!(
             r##"#![allow(unused)]
 use std::collections::{{HashMap, HashSet, BTreeMap, BTreeSet, VecDeque}};
+use std::cmp::{{min, max, Ordering}};
 
 {code}
 
@@ -337,6 +351,8 @@ struct Arg {{
     raw: String,
     parsed_str: String,
     parsed_chars: Vec<char>,
+    parsed_ints: Vec<i32>,
+    parsed_2d_ints: Vec<Vec<i32>>,
 }}
 
 fn parse_arg(s: &str) -> Arg {{
@@ -357,7 +373,28 @@ fn parse_arg(s: &str) -> Arg {{
     }} else {{
         vec![]
     }};
-    Arg {{ raw, parsed_str, parsed_chars }}
+    // Pre-parse int array
+    let parsed_ints = if s.starts_with('[') && s.len() >= 2 {{
+        let inner = &s[1..s.len()-1];
+        if inner.trim().is_empty() {{ vec![] }}
+        else {{ inner.split(',').filter_map(|x| x.trim().parse().ok()).collect() }}
+    }} else {{
+        vec![]
+    }};
+    // Pre-parse 2D int array
+    let parsed_2d_ints = if s.starts_with("[[") {{
+        parse_json_array(s).into_iter()
+            .map(|x| {{
+                let x = x.trim();
+                if x == "[]" || !x.starts_with('[') {{ return vec![]; }}
+                let inner = &x[1..x.len()-1];
+                inner.split(',').filter_map(|n| n.trim().parse().ok()).collect()
+            }})
+            .collect()
+    }} else {{
+        vec![]
+    }};
+    Arg {{ raw, parsed_str, parsed_chars, parsed_ints, parsed_2d_ints }}
 }}
 
 impl Arg {{
@@ -429,6 +466,22 @@ impl<'a> FromArgMut<'a> for &'a mut Vec<char> {{
     fn from_arg_mut(arg: &'a mut Arg) -> Self {{ &mut arg.parsed_chars }}
 }}
 
+impl<'a> FromArgMut<'a> for &'a [i32] {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{ &arg.parsed_ints }}
+}}
+
+impl<'a> FromArgMut<'a> for &'a mut Vec<i32> {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{ &mut arg.parsed_ints }}
+}}
+
+impl<'a> FromArgMut<'a> for &'a mut Vec<Vec<i32>> {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{ &mut arg.parsed_2d_ints }}
+}}
+
+impl<'a> FromArgMut<'a> for &'a [Vec<i32>] {{
+    fn from_arg_mut(arg: &'a mut Arg) -> Self {{ &arg.parsed_2d_ints }}
+}}
+
 impl<'a> FromArgMut<'a> for Vec<String> {{
     fn from_arg_mut(arg: &'a mut Arg) -> Self {{
         let s = arg.raw.trim();
@@ -465,7 +518,7 @@ fn print_result<T: std::fmt::Debug>(result: &T) {{
     println!("{{}}", s);
 }}
 "##,
-            code = structured.code,
+            code = clean_code,
             escaped_input = escaped_input,
             func_name = structured.function_name,
             arg_decls = arg_decls,
@@ -957,4 +1010,21 @@ fn count_json_args(input: &str) -> usize {
         prev = c;
     }
     count
+}
+
+/// Format a Python import statement with proper syntax
+/// Handles collections items, dotted imports, and regular imports
+fn format_python_import(import: &str, collections_items: &[&str]) -> String {
+    // Collections items need "from collections import X"
+    if collections_items.contains(&import) {
+        return format!("from collections import {}", import);
+    }
+
+    // Dotted imports like "collections.defaultdict" -> "from collections import defaultdict"
+    if let Some((module, item)) = import.rsplit_once('.') {
+        return format!("from {} import {}", module, item);
+    }
+
+    // Regular module import
+    format!("import {}", import)
 }

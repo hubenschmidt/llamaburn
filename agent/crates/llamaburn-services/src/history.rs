@@ -1,7 +1,7 @@
 use llamaburn_benchmark::BenchmarkSummary;
 use llamaburn_core::{
     AudioBenchmarkConfig, AudioBenchmarkMetrics, AudioBenchmarkSummary, AudioMode,
-    BenchmarkConfig, BenchmarkMetrics, BenchmarkType, CodeBenchmarkConfig, CodeBenchmarkMetrics,
+    TextBenchmarkConfig, BenchmarkMetrics, BenchmarkType, CodeBenchmarkConfig, CodeBenchmarkMetrics,
     CodeBenchmarkSummary, EffectDetectionResult, EffectDetectionTool, Language,
 };
 use rusqlite::{params, Connection};
@@ -36,7 +36,7 @@ pub struct BenchmarkHistoryEntry {
     pub timestamp: i64,
     pub benchmark_type: BenchmarkType,
     pub model_id: String,
-    pub config: BenchmarkConfig,
+    pub config: TextBenchmarkConfig,
     pub summary: BenchmarkSummary,
     pub metrics: Vec<BenchmarkMetrics>,
 }
@@ -101,6 +101,21 @@ pub struct CodeHistoryEntry {
     pub session_id: Option<String>,
     #[serde(default)]
     pub status: RunStatus,
+    #[serde(default)]
+    pub preset_id: Option<String>,
+}
+
+/// Saved benchmark configuration preset
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Preset {
+    pub id: String,
+    pub name: String,
+    pub created_at: i64,
+    pub model_id: String,
+    pub language: Language,
+    pub temperature: f32,
+    pub max_tokens: Option<u32>,
+    pub problem_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -563,8 +578,8 @@ impl HistoryService {
         let metrics_json = serde_json::to_string(&entry.metrics)?;
 
         conn.execute(
-            "INSERT INTO benchmark_history (id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json, session_id, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO benchmark_history (id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json, session_id, status, preset_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 entry.id,
                 entry.timestamp,
@@ -576,6 +591,7 @@ impl HistoryService {
                 metrics_json,
                 entry.session_id,
                 entry.status.as_str(),
+                entry.preset_id,
             ],
         )?;
 
@@ -709,7 +725,7 @@ impl HistoryService {
         let type_str = serde_json::to_string(&BenchmarkType::Code)?;
 
         let mut sql = String::from(
-            "SELECT id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json, session_id, status
+            "SELECT id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json, session_id, status, preset_id
              FROM benchmark_history WHERE benchmark_type = ?",
         );
 
@@ -721,46 +737,48 @@ impl HistoryService {
 
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params![type_str], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, String>(6)?,
-                row.get::<_, String>(7)?,
-                row.get::<_, Option<String>>(8)?,
-                row.get::<_, Option<String>>(9)?,
-            ))
+            Ok(CodeHistoryRow {
+                id: row.get(0)?,
+                timestamp: row.get(1)?,
+                benchmark_type: row.get(2)?,
+                language: row.get(3)?,
+                model_id: row.get(4)?,
+                config_json: row.get(5)?,
+                summary_json: row.get(6)?,
+                metrics_json: row.get(7)?,
+                session_id: row.get(8)?,
+                status: row.get(9)?,
+                preset_id: row.get(10)?,
+            })
         })?;
 
         let mut entries = Vec::new();
         for row in rows {
-            let (id, timestamp, benchmark_type, language, model_id, config_json, summary_json, metrics_json, session_id, status) = row?;
-            let Ok(language) = language.map(|s| serde_json::from_str(&s)).transpose() else {
+            let row = row?;
+            let Ok(language) = row.language.map(|s| serde_json::from_str(&s)).transpose() else {
                 continue;
             };
-            let Ok(config) = serde_json::from_str(&config_json) else {
+            let Ok(config) = serde_json::from_str(&row.config_json) else {
                 continue;
             };
-            let Ok(summary) = serde_json::from_str(&summary_json) else {
+            let Ok(summary) = serde_json::from_str(&row.summary_json) else {
                 continue;
             };
-            let Ok(metrics) = serde_json::from_str(&metrics_json) else {
+            let Ok(metrics) = serde_json::from_str(&row.metrics_json) else {
                 continue;
             };
             entries.push(CodeHistoryEntry {
-                id,
-                timestamp,
-                benchmark_type: serde_json::from_str(&benchmark_type).unwrap_or_default(),
-                model_id,
+                id: row.id,
+                timestamp: row.timestamp,
+                benchmark_type: serde_json::from_str(&row.benchmark_type).unwrap_or_default(),
+                model_id: row.model_id,
                 language: language.unwrap_or(Language::Python),
                 config,
                 summary,
                 metrics,
-                session_id,
-                status: status.map(|s| RunStatus::from_str(&s)).unwrap_or_default(),
+                session_id: row.session_id,
+                status: row.status.map(|s| RunStatus::from_str(&s)).unwrap_or_default(),
+                preset_id: row.preset_id,
             });
         }
 
@@ -1033,6 +1051,108 @@ impl HistoryService {
         conn.execute("DELETE FROM batch_state WHERE session_id = ?1", params![session_id])?;
         Ok(())
     }
+
+    // ========== Preset Methods ==========
+
+    /// Insert a new preset
+    pub fn insert_preset(&self, preset: &Preset) -> Result<()> {
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
+        let language = serde_json::to_string(&preset.language)?;
+        let problem_ids = serde_json::to_string(&preset.problem_ids)?;
+
+        conn.execute(
+            "INSERT INTO benchmark_presets (id, name, created_at, model_id, language, temperature, max_tokens, problem_ids)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                preset.id,
+                preset.name,
+                preset.created_at,
+                preset.model_id,
+                language,
+                preset.temperature,
+                preset.max_tokens,
+                problem_ids,
+            ],
+        )?;
+        tracing::debug!("Saved preset: {}", preset.name);
+        Ok(())
+    }
+
+    /// List all presets
+    pub fn list_presets(&self) -> Result<Vec<Preset>> {
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, created_at, model_id, language, temperature, max_tokens, problem_ids
+             FROM benchmark_presets ORDER BY name ASC"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, f64>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        })?;
+
+        let mut presets = Vec::new();
+        for row in rows {
+            let (id, name, created_at, model_id, language, temperature, max_tokens, problem_ids) = row?;
+            let language: Language = serde_json::from_str(&language).unwrap_or(Language::Python);
+            let problem_ids: Vec<String> = serde_json::from_str(&problem_ids).unwrap_or_default();
+            presets.push(Preset {
+                id,
+                name,
+                created_at,
+                model_id,
+                language,
+                temperature: temperature as f32,
+                max_tokens: max_tokens.map(|t| t as u32),
+                problem_ids,
+            });
+        }
+        Ok(presets)
+    }
+
+    /// Get a preset by ID
+    pub fn get_preset(&self, id: &str) -> Result<Option<Preset>> {
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, created_at, model_id, language, temperature, max_tokens, problem_ids
+             FROM benchmark_presets WHERE id = ?1"
+        )?;
+
+        let mut rows = stmt.query(params![id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+
+        let language: Language = serde_json::from_str(&row.get::<_, String>(4)?).unwrap_or(Language::Python);
+        let problem_ids: Vec<String> = serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or_default();
+
+        Ok(Some(Preset {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            created_at: row.get(2)?,
+            model_id: row.get(3)?,
+            language,
+            temperature: row.get::<_, f64>(5)? as f32,
+            max_tokens: row.get::<_, Option<i64>>(6)?.map(|t| t as u32),
+            problem_ids,
+        }))
+    }
+
+    /// Delete a preset
+    pub fn delete_preset(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|_| HistoryError::LockPoisoned)?;
+        conn.execute("DELETE FROM benchmark_presets WHERE id = ?1", params![id])?;
+        tracing::debug!("Deleted preset: {}", id);
+        Ok(())
+    }
 }
 
 struct BatchStateRow {
@@ -1062,6 +1182,20 @@ struct RowData {
     config_json: String,
     summary_json: String,
     metrics_json: String,
+}
+
+struct CodeHistoryRow {
+    id: String,
+    timestamp: i64,
+    benchmark_type: String,
+    language: Option<String>,
+    model_id: String,
+    config_json: String,
+    summary_json: String,
+    metrics_json: String,
+    session_id: Option<String>,
+    status: Option<String>,
+    preset_id: Option<String>,
 }
 
 fn default_db_path() -> PathBuf {

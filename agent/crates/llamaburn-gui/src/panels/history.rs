@@ -1,7 +1,8 @@
 use eframe::egui;
-use llamaburn_core::{BenchmarkType, Language};
+use llamaburn_services::{BenchmarkType, Language};
 use llamaburn_services::{AudioHistoryEntry, BenchmarkHistoryEntry, CodeHistoryEntry, HistoryFilter, HistoryService};
-use std::collections::HashSet;
+use sha2::{Sha256, Digest};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Request to load benchmark params from history
@@ -150,6 +151,51 @@ impl HistoryEntry {
         };
         e.status.as_str()
     }
+
+    /// Get list of failed problem IDs (problems where tests_passed < tests_total)
+    pub fn failed_problems(&self) -> Vec<String> {
+        let HistoryEntry::Code(e) = self else {
+            return Vec::new();
+        };
+        e.metrics
+            .iter()
+            .filter(|m| m.tests_passed < m.tests_total)
+            .map(|m| m.problem_id.clone())
+            .collect()
+    }
+
+    /// Get preset_id if this is a Code entry with a preset
+    pub fn preset_id(&self) -> Option<&str> {
+        let HistoryEntry::Code(e) = self else {
+            return None;
+        };
+        e.preset_id.as_deref()
+    }
+
+    /// Compute result signature (only for preset-linked Code entries)
+    /// Returns 8-char hash of: problem_id + tests_passed + sha256(generated_code)
+    pub fn result_signature(&self) -> Option<String> {
+        let HistoryEntry::Code(e) = self else {
+            return None;
+        };
+        e.preset_id.as_ref()?; // Only compute if from preset
+
+        let mut hasher = Sha256::new();
+
+        // Sort metrics by problem_id for deterministic ordering
+        let mut sorted = e.metrics.clone();
+        sorted.sort_by(|a, b| a.problem_id.cmp(&b.problem_id));
+
+        for m in &sorted {
+            hasher.update(m.problem_id.as_bytes());
+            hasher.update(m.tests_passed.to_le_bytes());
+            let code_hash = Sha256::digest(m.generated_code.as_bytes());
+            hasher.update(&code_hash);
+        }
+
+        let result = hasher.finalize();
+        Some(format!("{:x}", result)[..8].to_string())
+    }
 }
 
 pub struct HistoryPanel {
@@ -161,6 +207,7 @@ pub struct HistoryPanel {
     selected_ids: HashSet<String>,
     show_comparison: bool,
     pub load_request: Option<LoadCodeBenchmarkRequest>,
+    presets_cache: HashMap<String, String>, // preset_id -> preset_name
 }
 
 impl HistoryPanel {
@@ -174,6 +221,7 @@ impl HistoryPanel {
             selected_ids: HashSet::new(),
             show_comparison: false,
             load_request: None,
+            presets_cache: HashMap::new(),
         }
     }
 
@@ -219,6 +267,14 @@ impl HistoryPanel {
 
         // Limit total entries
         entries.truncate(100);
+
+        // Refresh presets cache
+        self.presets_cache.clear();
+        if let Ok(presets) = self.history_service.list_presets() {
+            for preset in presets {
+                self.presets_cache.insert(preset.id.clone(), preset.name.clone());
+            }
+        }
 
         self.entries = entries;
         self.needs_refresh = false;
@@ -380,7 +436,7 @@ impl HistoryPanel {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 egui::Grid::new("history_table")
-                    .num_columns(17)
+                    .num_columns(20)
                     .spacing([10.0, 6.0])
                     .striped(true)
                     .show(ui, |ui| {
@@ -396,6 +452,9 @@ impl HistoryPanel {
                         ui.label(egui::RichText::new("Runs").strong());
                         ui.label(egui::RichText::new("Exec").strong());
                         ui.label(egui::RichText::new("Detail").strong());
+                        ui.label(egui::RichText::new("Failed").strong());
+                        ui.label(egui::RichText::new("Preset").strong());
+                        ui.label(egui::RichText::new("Sig").strong());
                         ui.label(egui::RichText::new("Session").strong());
                         ui.label(egui::RichText::new("Status").strong());
                         ui.label(egui::RichText::new("Date").strong());
@@ -456,6 +515,30 @@ impl HistoryPanel {
                             ui.label(runs);
                             ui.label(exec);
                             ui.label(detail);
+
+                            // Failed problems column (red text)
+                            let failed = entry.failed_problems();
+                            let failed_text = match failed.is_empty() {
+                                true => "—".to_string(),
+                                false => failed.join(", "),
+                            };
+                            let failed_color = match failed.is_empty() {
+                                true => ui.visuals().text_color(),
+                                false => egui::Color32::from_rgb(255, 100, 100),
+                            };
+                            ui.label(egui::RichText::new(failed_text).color(failed_color));
+
+                            // Preset name column
+                            let preset_name = entry.preset_id()
+                                .and_then(|id| self.presets_cache.get(id))
+                                .map(|s| s.as_str())
+                                .unwrap_or("—");
+                            ui.label(preset_name);
+
+                            // Signature column (only for preset-linked entries)
+                            let sig = entry.result_signature().unwrap_or_else(|| "—".to_string());
+                            ui.label(egui::RichText::new(&sig).monospace());
+
                             ui.label(entry.session_display());
                             let status = entry.status();
                             let status_color = match status {
@@ -621,6 +704,7 @@ impl HistoryPanel {
 
     fn export_csv(&self) {
         let entries = self.entries.clone();
+        let presets_cache = self.presets_cache.clone();
         std::thread::spawn(move || {
             let path = rfd::FileDialog::new()
                 .set_title("Export History")
@@ -629,7 +713,7 @@ impl HistoryPanel {
                 .save_file();
             let Some(path) = path else { return };
 
-            let mut csv = String::from("Timestamp,Model,Type,Params,TPS,Test Pass,TTFT,RTF,Runs,ExecTime,Detail,Session,Status\n");
+            let mut csv = String::from("Timestamp,Model,Type,Params,TPS,Test Pass,TTFT,RTF,Runs,ExecTime,Detail,Failed,Preset,Signature,Session,Status\n");
             for entry in &entries {
                 let (tps, pass, ttft, rtf, runs, exec, detail) = match &entry {
                     HistoryEntry::Text(e) => (
@@ -663,13 +747,26 @@ impl HistoryPanel {
                             e.summary.hard_solved, e.summary.hard_total),
                     ),
                 };
+                let failed = entry.failed_problems();
+                let failed_str = match failed.is_empty() {
+                    true => String::new(),
+                    false => failed.join(";"),
+                };
+                let preset_name = entry.preset_id()
+                    .and_then(|id| presets_cache.get(id))
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
+                let sig = entry.result_signature().unwrap_or_default();
                 let row = format!(
-                    "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                     entry.timestamp(),
                     entry.model_id(),
                     format!("{:?}", entry.benchmark_type()),
                     entry.code_params().replace(',', ";"),
                     tps, pass, ttft, rtf, runs, exec, detail,
+                    failed_str,
+                    preset_name,
+                    sig,
                     entry.session_display(),
                     entry.status(),
                 );

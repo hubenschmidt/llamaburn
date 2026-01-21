@@ -5,10 +5,10 @@ use tracing::{info, warn};
 
 use llamaburn_services::DeviceType;
 
-use super::super::{AudioTestEvent, AudioTestState, BenchmarkPanel};
+use super::{AudioBenchmarkPanel, AudioSourceMode, AudioTestEvent, AudioTestState};
 
-impl BenchmarkPanel {
-    pub(in super::super) fn render_audio_device_menu(&mut self, ui: &mut egui::Ui) {
+impl AudioBenchmarkPanel {
+    pub fn render_audio_device_menu(&mut self, ui: &mut egui::Ui, error: &mut Option<String>) {
         // Track device before menu to detect changes
         let device_before = self.selected_device_id.clone();
 
@@ -108,7 +108,10 @@ impl BenchmarkPanel {
             .add_enabled(can_monitor, egui::Button::new(monitor_label))
             .clicked()
         {
-            [Self::start_live_monitor, Self::stop_live_monitor][is_monitoring as usize](self);
+            match is_monitoring {
+                true => self.stop_live_monitor(),
+                false => self.start_live_monitor(error),
+            }
             ui.close_menu();
         }
 
@@ -121,7 +124,7 @@ impl BenchmarkPanel {
 
         // Rescan Audio Devices
         if ui.button("Rescan Audio Devices").clicked() {
-            self.refresh_audio_devices();
+            self.refresh_audio_devices(error);
             ui.close_menu();
         }
 
@@ -132,7 +135,7 @@ impl BenchmarkPanel {
         }
     }
 
-    pub(in super::super) fn refresh_audio_devices(&mut self) {
+    pub fn refresh_audio_devices(&mut self, error: &mut Option<String>) {
         use llamaburn_services::AudioInputService;
 
         self.loading_devices = true;
@@ -141,7 +144,7 @@ impl BenchmarkPanel {
             Ok(d) => d,
             Err(e) => {
                 warn!("Failed to list audio devices: {}", e);
-                self.error = Some(format!("Audio device error: {}", e));
+                *error = Some(format!("Audio device error: {}", e));
                 self.loading_devices = false;
                 return;
             }
@@ -166,7 +169,7 @@ impl BenchmarkPanel {
         }
     }
 
-    pub(in super::super) fn start_audio_test(&mut self) {
+    pub fn start_audio_test(&mut self) {
         use llamaburn_services::{AudioCaptureConfig, AudioInputService};
 
         let Some(device_id) = self.selected_device_id.clone() else {
@@ -206,7 +209,7 @@ impl BenchmarkPanel {
         });
     }
 
-    pub(in super::super) fn poll_audio_test(&mut self) {
+    pub fn poll_audio_test(&mut self, error: &mut Option<String>) {
         use llamaburn_services::AudioOutputService;
 
         // Check recording completion
@@ -260,21 +263,21 @@ impl BenchmarkPanel {
                         };
                     }
                     Err(e) => {
-                        self.error = Some(format!("Playback failed: {}", e));
+                        *error = Some(format!("Playback failed: {}", e));
                         self.audio_test_state = AudioTestState::Idle;
                         self.audio_test_rx = None;
                     }
                 }
             }
             AudioTestEvent::Error(e) => {
-                self.error = Some(format!("Audio test error: {}", e));
+                *error = Some(format!("Audio test error: {}", e));
                 self.audio_test_state = AudioTestState::Idle;
                 self.audio_test_rx = None;
             }
         }
     }
 
-    pub(in super::super) fn start_live_monitor(&mut self) {
+    pub fn start_live_monitor(&mut self, error: &mut Option<String>) {
         use llamaburn_services::{AudioInputService, AudioOutputService};
 
         let Some(device_id) = self.selected_device_id.clone() else {
@@ -289,7 +292,7 @@ impl BenchmarkPanel {
             match AudioInputService::start_stream_raw(&device_id, audio_tx) {
                 Ok(result) => result,
                 Err(e) => {
-                    self.error = Some(format!("Failed to start audio stream: {}", e));
+                    *error = Some(format!("Failed to start audio stream: {}", e));
                     return;
                 }
             };
@@ -307,7 +310,7 @@ impl BenchmarkPanel {
             Ok(h) => h,
             Err(e) => {
                 stream_handle.stop();
-                self.error = Some(format!("Failed to start monitor output: {}", e));
+                *error = Some(format!("Failed to start monitor output: {}", e));
                 return;
             }
         };
@@ -318,7 +321,7 @@ impl BenchmarkPanel {
         self.audio_test_state = AudioTestState::Monitoring;
     }
 
-    pub(in super::super) fn stop_live_monitor(&mut self) {
+    pub fn stop_live_monitor(&mut self) {
         info!("Stopping live audio monitor");
 
         // Stop input stream
@@ -334,7 +337,7 @@ impl BenchmarkPanel {
         self.audio_test_state = AudioTestState::Idle;
     }
 
-    pub(in super::super) fn start_level_monitor(&mut self) {
+    pub fn start_level_monitor(&mut self) {
         use llamaburn_services::AudioInputService;
 
         // Stop existing monitor if any
@@ -400,7 +403,7 @@ impl BenchmarkPanel {
         });
     }
 
-    pub(in super::super) fn stop_level_monitor(&mut self) {
+    pub fn stop_level_monitor(&mut self) {
         if let Some(handle) = self.level_monitor_handle.take() {
             handle.stop();
         }
@@ -409,7 +412,7 @@ impl BenchmarkPanel {
         self.input_levels = (0.0, 0.0);
     }
 
-    pub(in super::super) fn poll_level_monitor(&mut self) {
+    pub fn poll_level_monitor(&mut self) {
         let Some(rx) = &self.level_monitor_rx else {
             // Apply decay when no monitor running
             self.input_levels.0 *= 0.85;
@@ -463,7 +466,7 @@ impl BenchmarkPanel {
         }
     }
 
-    pub(in super::super) fn render_level_meter(&self, ui: &mut egui::Ui) {
+    pub fn render_level_meter(&self, ui: &mut egui::Ui) {
         let (left, right) = self.input_levels;
 
         // Convert to dB (-60 to 0 range)
@@ -551,11 +554,11 @@ impl BenchmarkPanel {
         });
     }
 
-    pub(in super::super) fn check_capture_duration(&mut self) {
+    pub fn check_capture_duration(&mut self, live_output: &mut String) {
         // Only check if we're in capture mode (not live streaming)
         let dominated_by_capture = self.effect_detection_running
             && self.live_recording
-            && self.audio_source_mode == super::super::AudioSourceMode::Capture;
+            && self.audio_source_mode == AudioSourceMode::Capture;
 
         if !dominated_by_capture {
             return;
@@ -579,10 +582,10 @@ impl BenchmarkPanel {
         }
         self.live_recording = false;
         self.recording_start = None;
-        self.live_output.push_str("Recording complete. Processing...\n");
+        live_output.push_str("Recording complete. Processing...\n");
     }
 
-    pub(in super::super) fn check_playback_completion(&mut self) {
+    pub fn check_playback_completion(&mut self) {
         let AudioTestState::Playing { handle } = &mut self.audio_test_state else {
             return;
         };
@@ -601,7 +604,7 @@ impl BenchmarkPanel {
         self.audio_test_rx = None;
     }
 
-    pub(in super::super) fn pick_audio_file(&mut self) {
+    pub fn pick_audio_file(&mut self, error: &mut Option<String>) {
         use llamaburn_services::get_audio_duration_ms;
 
         let file = rfd::FileDialog::new()
@@ -616,10 +619,10 @@ impl BenchmarkPanel {
             Ok(duration) => {
                 self.audio_duration_ms = Some(duration);
                 self.audio_file_path = Some(path);
-                self.error = None;
+                *error = None;
             }
             Err(e) => {
-                self.error = Some(format!("Failed to read audio: {}", e));
+                *error = Some(format!("Failed to read audio: {}", e));
             }
         }
     }

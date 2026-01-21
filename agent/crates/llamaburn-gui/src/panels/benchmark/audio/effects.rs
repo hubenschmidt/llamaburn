@@ -1,14 +1,14 @@
 use eframe::egui;
 use tracing::{info, warn};
 
-use llamaburn_core::{EffectDetectionResult, EffectDetectionTool};
+use llamaburn_services::{EffectDetectionResult, EffectDetectionTool};
 use llamaburn_services::EffectDetectionService;
 
-use super::super::BenchmarkPanel;
+use super::{AudioAction, AudioBenchmarkPanel};
 
-impl BenchmarkPanel {
+impl AudioBenchmarkPanel {
     /// Ableton-style horizontal effects rack panel at bottom of UI
-    pub(in super::super) fn render_effects_rack(&mut self, ui: &mut egui::Ui) {
+    pub fn render_effects_rack(&mut self, ui: &mut egui::Ui) {
         use llamaburn_services::audio_effects::{
             CompressorEffect, DelayEffect, GainEffect, HighPassEffect, LowPassEffect, ReverbEffect,
         };
@@ -142,7 +142,7 @@ impl BenchmarkPanel {
         }
     }
 
-    pub(in super::super) fn render_effect_list(&self, ui: &mut egui::Ui) {
+    pub fn render_effect_list(&self, ui: &mut egui::Ui) {
         let Ok(mut chain) = self.effect_chain.lock() else {
             return;
         };
@@ -187,7 +187,7 @@ impl BenchmarkPanel {
         ui.close_menu();
     }
 
-    pub(in super::super) fn render_add_effect_menu(&self, ui: &mut egui::Ui) {
+    pub fn render_add_effect_menu(&self, ui: &mut egui::Ui) {
         use llamaburn_services::audio_effects::{
             CompressorEffect, DelayEffect, GainEffect, HighPassEffect, LowPassEffect, ReverbEffect,
         };
@@ -215,7 +215,7 @@ impl BenchmarkPanel {
         });
     }
 
-    pub(in super::super) fn render_effects_menu(&mut self, ui: &mut egui::Ui) {
+    pub fn render_effects_menu(&mut self, ui: &mut egui::Ui) {
         let effect_count = self.effect_chain.lock().map(|c| c.len()).unwrap_or(0);
 
         let label = match effect_count {
@@ -230,9 +230,9 @@ impl BenchmarkPanel {
         });
     }
 
-    pub(in super::super) fn start_effect_detection(&mut self) {
+    pub fn start_effect_detection(&mut self) -> Vec<AudioAction> {
         let Some(audio_path) = self.audio_file_path.clone() else {
-            return;
+            return vec![];
         };
 
         info!("Starting effect detection: {:?}", audio_path);
@@ -255,18 +255,20 @@ impl BenchmarkPanel {
             };
             let _ = tx.send(result);
         });
+
+        vec![]
     }
 
-    pub(in super::super) fn start_effect_detection_capture(&mut self) {
+    pub fn start_effect_detection_capture(&mut self, selected_model: &str) -> Vec<AudioAction> {
         use llamaburn_services::AudioInputService;
 
         let Some(device_id) = self.selected_device_id.clone() else {
-            return;
+            return vec![];
         };
         let duration = self.capture_duration_secs;
         let tool = self.selected_effect_tool;
         let effect_chain = self.effect_chain.clone();
-        let llm_model = (!self.selected_model.is_empty()).then(|| self.selected_model.clone());
+        let llm_model = (!selected_model.is_empty()).then(|| selected_model.to_string());
 
         // Check if using LLM2Fx dry+wet mode
         let is_dry_wet_mode = tool == EffectDetectionTool::Llm2FxTools;
@@ -278,7 +280,6 @@ impl BenchmarkPanel {
 
         self.effect_detection_running = true;
         self.effect_detection_result = None;
-        self.live_output.clear();
         self.live_recording = true;
         self.waveform_peaks.clear();
         self.recording_start = Some(std::time::Instant::now());
@@ -294,14 +295,18 @@ impl BenchmarkPanel {
             true => "Effect Detection (Dry+Wet Capture)\n===================================\n",
             false => "Effect Detection (Capture)\n===========================\n",
         };
-        self.live_output.push_str(&format!(
-            "{}Tool: {}\nDevice: {}\nDuration: {}s\n{}Recording audio...\n",
-            header,
-            tool.label(),
-            device_id,
-            duration,
-            mode_text,
-        ));
+
+        let actions = vec![
+            AudioAction::ClearOutput,
+            AudioAction::AppendOutput(format!(
+                "{}Tool: {}\nDevice: {}\nDuration: {}s\n{}Recording audio...\n",
+                header,
+                tool.label(),
+                device_id,
+                duration,
+                mode_text,
+            )),
+        ];
 
         // Get applied effects (ground truth) before spawning thread
         let applied_effects = if is_dry_wet_mode {
@@ -392,13 +397,15 @@ impl BenchmarkPanel {
             let result = result.map_err(|e| e.to_string());
             let _ = tx.send(result);
         });
+
+        actions
     }
 
-    pub(in super::super) fn start_effect_detection_live(&mut self) {
+    pub fn start_effect_detection_live(&mut self) -> Vec<AudioAction> {
         use llamaburn_services::AudioInputService;
 
         let Some(device_id) = self.selected_device_id.clone() else {
-            return;
+            return vec![];
         };
         let tool = self.selected_effect_tool;
         let chunk_duration = 5; // Analyze 5-second chunks
@@ -413,17 +420,20 @@ impl BenchmarkPanel {
         self.live_recording = true;
         self.waveform_peaks.clear();
         self.recording_start = Some(std::time::Instant::now());
-        self.live_output.clear();
-        self.live_output.push_str(&format!(
-            "Live Effect Detection\n\
-             =====================\n\
-             Tool: {}\n\
-             Device: {}\n\
-             Analyzing {}s chunks...\n\n",
-            tool.label(),
-            device_id,
-            chunk_duration,
-        ));
+
+        let actions = vec![
+            AudioAction::ClearOutput,
+            AudioAction::AppendOutput(format!(
+                "Live Effect Detection\n\
+                 =====================\n\
+                 Tool: {}\n\
+                 Device: {}\n\
+                 Analyzing {}s chunks...\n\n",
+                tool.label(),
+                device_id,
+                chunk_duration,
+            )),
+        ];
 
         // Start level monitor for waveform display
         self.start_level_monitor();
@@ -463,12 +473,16 @@ impl BenchmarkPanel {
             };
             let _ = tx.send(result);
         });
+
+        actions
     }
 
-    pub(in super::super) fn poll_effect_detection(&mut self) {
+    pub fn poll_effect_detection(&mut self) -> Vec<AudioAction> {
         let Some(rx) = self.effect_detection_rx.take() else {
-            return;
+            return vec![];
         };
+
+        let mut actions = Vec::new();
 
         match rx.try_recv() {
             Ok(result) => {
@@ -488,13 +502,14 @@ impl BenchmarkPanel {
                             detection_result.effects.len()
                         );
                         // Format results for Live Output
-                        self.format_detection_results(&detection_result);
+                        let output = self.format_detection_results(&detection_result);
+                        actions.push(AudioAction::AppendOutput(output));
                         self.effect_detection_result = Some(detection_result);
                     }
                     Err(e) => {
                         warn!("Effect detection failed: {}", e);
-                        self.live_output.push_str(&format!("\n❌ Error: {}\n", e));
-                        self.error = Some(format!("Effect detection failed: {}", e));
+                        actions.push(AudioAction::AppendOutput(format!("\n❌ Error: {}\n", e)));
+                        actions.push(AudioAction::SetError(Some(format!("Effect detection failed: {}", e))));
                     }
                 }
             }
@@ -505,71 +520,74 @@ impl BenchmarkPanel {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.effect_detection_running = false;
                 self.live_recording = false;
-                self.error = Some("Effect detection thread disconnected".to_string());
+                actions.push(AudioAction::SetError(Some("Effect detection thread disconnected".to_string())));
             }
         }
+
+        actions
     }
 
-    pub(in super::super) fn format_detection_results(&mut self, result: &EffectDetectionResult) {
-        self.live_output.push_str("\n════════════════════════════════════\n");
-        self.live_output.push_str("DETECTION RESULTS\n");
-        self.live_output.push_str("════════════════════════════════════\n\n");
+    pub fn format_detection_results(&mut self, result: &EffectDetectionResult) -> String {
+        let mut output = String::new();
+        output.push_str("\n════════════════════════════════════\n");
+        output.push_str("DETECTION RESULTS\n");
+        output.push_str("════════════════════════════════════\n\n");
 
         // Ground Truth (Applied Effects)
         if let Some(ref applied) = result.applied_effects {
-            self.live_output.push_str("📋 APPLIED EFFECTS (Ground Truth)\n");
-            self.live_output.push_str("──────────────────────────────────\n");
+            output.push_str("📋 APPLIED EFFECTS (Ground Truth)\n");
+            output.push_str("──────────────────────────────────\n");
             if applied.is_empty() {
-                self.live_output.push_str("  (none)\n");
+                output.push_str("  (none)\n");
             }
             for effect in applied {
                 let status = if effect.bypassed { " [BYPASSED]" } else { "" };
-                self.live_output.push_str(&format!("  • {}{}\n", effect.name, status));
+                output.push_str(&format!("  • {}{}\n", effect.name, status));
                 for (param, value) in &effect.parameters {
-                    self.live_output.push_str(&format!("      {}: {:.2}\n", param, value));
+                    output.push_str(&format!("      {}: {:.2}\n", param, value));
                 }
             }
-            self.live_output.push('\n');
+            output.push('\n');
         }
 
         // Signal Analysis
         if let Some(ref sa) = result.signal_analysis {
-            self.live_output.push_str("📊 SIGNAL ANALYSIS\n");
-            self.live_output.push_str("──────────────────────────────────\n");
+            output.push_str("📊 SIGNAL ANALYSIS\n");
+            output.push_str("──────────────────────────────────\n");
             if let Some(delay) = sa.detected_delay_ms {
-                self.live_output.push_str(&format!("  • Delay detected: {:.1}ms\n", delay));
+                output.push_str(&format!("  • Delay detected: {:.1}ms\n", delay));
             }
             if let Some(dr) = sa.dynamic_range_change_db {
-                self.live_output.push_str(&format!("  • Dynamic range change: {:.1}dB\n", dr));
+                output.push_str(&format!("  • Dynamic range change: {:.1}dB\n", dr));
             }
             if let Some(freq) = sa.frequency_change_db {
-                self.live_output.push_str(&format!("  • Frequency change: {:.1}dB\n", freq));
+                output.push_str(&format!("  • Frequency change: {:.1}dB\n", freq));
             }
             if let Some(crest) = sa.crest_factor_change {
-                self.live_output.push_str(&format!("  • Crest factor change: {:.2}\n", crest));
+                output.push_str(&format!("  • Crest factor change: {:.2}\n", crest));
             }
-            self.live_output.push('\n');
+            output.push('\n');
         }
 
         // Detected Effects
-        self.live_output.push_str("🎯 DETECTED EFFECTS\n");
-        self.live_output.push_str("──────────────────────────────────\n");
+        output.push_str("🎯 DETECTED EFFECTS\n");
+        output.push_str("──────────────────────────────────\n");
         for effect in &result.effects {
-            self.live_output.push_str(&format!(
+            output.push_str(&format!(
                 "  • {} (confidence: {:.0}%)\n",
                 effect.name,
                 effect.confidence * 100.0
             ));
         }
-        self.live_output.push('\n');
+        output.push('\n');
 
         // Embedding Metrics
         if let (Some(dist), Some(sim)) = (result.embedding_distance, result.cosine_similarity) {
-            self.live_output.push_str("📈 EMBEDDING METRICS\n");
-            self.live_output.push_str("──────────────────────────────────\n");
-            self.live_output.push_str(&format!("  • Distance: {:.4}\n", dist));
-            self.live_output.push_str(&format!("  • Cosine similarity: {:.4}\n", sim));
-            self.live_output.push('\n');
+            output.push_str("📈 EMBEDDING METRICS\n");
+            output.push_str("──────────────────────────────────\n");
+            output.push_str(&format!("  • Distance: {:.4}\n", dist));
+            output.push_str(&format!("  • Cosine similarity: {:.4}\n", sim));
+            output.push('\n');
         }
 
         // LLM Blind Analysis
@@ -577,38 +595,39 @@ impl BenchmarkPanel {
             let model_info = result.llm_model_used.as_ref()
                 .map(|m| format!(" ({})", m))
                 .unwrap_or_default();
-            self.live_output.push_str(&format!("🤖 LLM BLIND ANALYSIS{}\n", model_info));
-            self.live_output.push_str("──────────────────────────────────\n");
-            self.live_output.push_str(&format!("  {}\n\n", description));
+            output.push_str(&format!("🤖 LLM BLIND ANALYSIS{}\n", model_info));
+            output.push_str("──────────────────────────────────\n");
+            output.push_str(&format!("  {}\n\n", description));
         }
 
         // Processing time
-        self.live_output.push_str(&format!(
+        output.push_str(&format!(
             "⏱️ Processing time: {:.1}ms\n",
             result.processing_time_ms
         ));
+
+        output
     }
 
-    pub(in super::super) fn install_effect_tool(&mut self, tool: EffectDetectionTool) {
-        // Stop any active recording session
-        self.stop_recording();
-
+    pub fn install_effect_tool(&mut self, tool: EffectDetectionTool) -> Vec<AudioAction> {
         // Clear session state
         self.effect_detection_result = None;
-        self.error = None;
-        self.progress.clear();
-        {
-            self.waveform_peaks.clear();
-            self.transcription_segments.clear();
-        }
+        self.waveform_peaks.clear();
+        self.transcription_segments.clear();
 
         let instructions = EffectDetectionService::install_instructions(tool);
 
         info!("Showing install instructions for: {:?}", tool);
-        self.live_output = format!(
-            "Install {} with:\n\n{}\n\nRun this in your terminal to install the Python package.",
-            tool.label(),
-            instructions
-        );
+
+        vec![
+            AudioAction::SetError(None),
+            AudioAction::SetProgress(String::new()),
+            AudioAction::ClearOutput,
+            AudioAction::AppendOutput(format!(
+                "Install {} with:\n\n{}\n\nRun this in your terminal to install the Python package.",
+                tool.label(),
+                instructions
+            )),
+        ]
     }
 }

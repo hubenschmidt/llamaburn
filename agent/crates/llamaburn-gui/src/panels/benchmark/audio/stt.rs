@@ -1,47 +1,48 @@
 use tracing::info;
 
-use llamaburn_core::{AudioBenchmarkConfig, AudioBenchmarkResult, AudioMode, AudioSource, WhisperModel};
+use llamaburn_services::{AudioBenchmarkConfig, AudioBenchmarkResult, AudioMode, AudioSource, WhisperModel};
 use llamaburn_services::{EffectDetectionService, WhisperService};
 
-use super::super::{
-    AudioBenchmarkEvent, AudioTestState, BenchmarkPanel, LiveTranscriptionEvent,
-    TranscriptionSegment,
+use super::{
+    AudioAction, AudioBenchmarkEvent, AudioBenchmarkPanel, AudioTestState,
+    LiveTranscriptionEvent, TranscriptionSegment,
 };
 
-impl BenchmarkPanel {
-    pub(in super::super) fn poll_audio_benchmark(&mut self) {
+impl AudioBenchmarkPanel {
+    pub fn poll_audio_benchmark(&mut self) -> Vec<AudioAction> {
         let Some(rx) = self.audio_rx.take() else {
-            return;
+            return vec![];
         };
 
+        let mut actions = Vec::new();
         let mut should_clear = false;
+        let mut result_for_history: Option<AudioBenchmarkResult> = None;
 
         while let Ok(event) = rx.try_recv() {
             match event {
                 AudioBenchmarkEvent::Progress(msg) => {
-                    self.live_output.push_str(&msg);
-                    self.live_output.push('\n');
+                    actions.push(AudioAction::AppendOutput(format!("{}\n", msg)));
                 }
                 AudioBenchmarkEvent::IterationComplete { iteration, metrics } => {
-                    self.progress = format!("Iteration {}", iteration);
-                    self.live_output.push_str(&format!(
+                    actions.push(AudioAction::SetProgress(format!("Iteration {}", iteration)));
+                    actions.push(AudioAction::AppendOutput(format!(
                         "Run {}: RTF={:.3}x ({:.0}ms) | {} words\n",
                         iteration, metrics.real_time_factor, metrics.processing_time_ms, metrics.word_count
-                    ));
+                    )));
                 }
                 AudioBenchmarkEvent::Done { metrics } => {
                     let summary = AudioBenchmarkResult::calculate_summary(&metrics);
 
-                    self.live_output.push_str(&format!(
+                    actions.push(AudioAction::AppendOutput(format!(
                         "\nSummary\n-------\nAvg RTF: {:.3}x ({:.0}x real-time)\nAvg Time: {:.0}ms\nMin/Max RTF: {:.3}/{:.3}\n",
                         summary.avg_rtf, 1.0 / summary.avg_rtf, summary.avg_processing_ms, summary.min_rtf, summary.max_rtf,
-                    ));
+                    )));
 
                     if let Some(first) = metrics.first() {
-                        self.live_output.push_str(&format!(
+                        actions.push(AudioAction::AppendOutput(format!(
                             "\nTranscription ({} words):\n{}\n",
                             first.word_count, first.transcription
-                        ));
+                        )));
                     }
 
                     let result = AudioBenchmarkResult {
@@ -58,17 +59,16 @@ impl BenchmarkPanel {
                         summary,
                     };
 
-                    self.save_audio_to_history(&result);
-                    self.audio_result = Some(result);
-                    self.progress = "Complete".to_string();
+                    self.audio_result = Some(result.clone());
+                    result_for_history = Some(result);
+                    actions.push(AudioAction::SetProgress("Complete".to_string()));
                     self.running = false;
                     should_clear = true;
-                    self.force_refresh_audio_rankings();
                 }
                 AudioBenchmarkEvent::Error(msg) => {
-                    self.live_output.push_str(&format!("\nError: {}\n", msg));
-                    self.error = Some(msg);
-                    self.progress = "Error".to_string();
+                    actions.push(AudioAction::AppendOutput(format!("\nError: {}\n", msg)));
+                    actions.push(AudioAction::SetError(Some(msg)));
+                    actions.push(AudioAction::SetProgress("Error".to_string()));
                     self.running = false;
                     should_clear = true;
                 }
@@ -78,27 +78,40 @@ impl BenchmarkPanel {
         if !should_clear {
             self.audio_rx = Some(rx);
         }
+
+        // Build history entry after the loop to avoid borrow issues
+        if let Some(result) = result_for_history {
+            if let Some(entry) = self.build_audio_history_entry(&result) {
+                actions.push(AudioAction::SaveHistory(entry));
+            }
+            actions.push(AudioAction::RefreshRankings);
+        }
+
+        actions
     }
 
-    pub(in super::super) fn start_audio_benchmark(&mut self) {
+    pub fn start_audio_benchmark(&mut self) -> Vec<AudioAction> {
         let Some(audio_path) = self.audio_file_path.clone() else {
-            return;
+            return vec![];
         };
         let Some(model) = self.whisper_model else {
-            return;
+            return vec![];
         };
 
         info!("Starting audio benchmark: {:?}", audio_path);
 
         self.running = true;
-        self.error = None;
         self.audio_result = None;
-        self.live_output.clear();
-        self.progress = "Loading model...".to_string();
+
+        let mut actions = vec![
+            AudioAction::SetError(None),
+            AudioAction::ClearOutput,
+            AudioAction::SetProgress("Loading model...".to_string()),
+        ];
 
         // Show config in live output
         let model_path = self.whisper_service.model_path(model);
-        self.live_output.push_str(&format!(
+        actions.push(AudioAction::AppendOutput(format!(
             "Audio Benchmark\n\
              ===============\n\
              Model: {} (~{}MB)\n\
@@ -112,7 +125,7 @@ impl BenchmarkPanel {
             audio_path.display(),
             self.iterations,
             self.warmup,
-        ));
+        )));
 
         // Create channel for async communication
         let (tx, rx) = std::sync::mpsc::channel();
@@ -204,16 +217,18 @@ impl BenchmarkPanel {
                 }
             }
         });
+
+        actions
     }
 
-    pub(in super::super) fn start_capture_benchmark(&mut self) {
+    pub fn start_capture_benchmark(&mut self) -> Vec<AudioAction> {
         use llamaburn_services::AudioInputService;
 
         let Some(device_id) = self.selected_device_id.clone() else {
-            return;
+            return vec![];
         };
         let Some(model) = self.whisper_model else {
-            return;
+            return vec![];
         };
         let duration = self.capture_duration_secs;
 
@@ -223,14 +238,17 @@ impl BenchmarkPanel {
         );
 
         self.running = true;
-        self.error = None;
         self.audio_result = None;
-        self.live_output.clear();
-        self.progress = "Recording...".to_string();
+
+        let mut actions = vec![
+            AudioAction::SetError(None),
+            AudioAction::ClearOutput,
+            AudioAction::SetProgress("Recording...".to_string()),
+        ];
 
         // Show config in live output
         let model_path = self.whisper_service.model_path(model);
-        self.live_output.push_str(&format!(
+        actions.push(AudioAction::AppendOutput(format!(
             "Capture Benchmark\n\
              =================\n\
              Model: {} (~{}MB)\n\
@@ -245,7 +263,7 @@ impl BenchmarkPanel {
             device_id,
             duration,
             self.iterations,
-        ));
+        )));
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.audio_rx = Some(rx);
@@ -293,7 +311,7 @@ impl BenchmarkPanel {
                         let real_time_factor = processing_time_ms / audio_duration_ms;
                         let word_count = result.text.split_whitespace().count() as u32;
 
-                        let metrics = llamaburn_core::AudioBenchmarkMetrics {
+                        let metrics = llamaburn_services::AudioBenchmarkMetrics {
                             real_time_factor,
                             processing_time_ms,
                             audio_duration_ms,
@@ -322,18 +340,18 @@ impl BenchmarkPanel {
                 metrics: metrics_vec,
             });
         });
+
+        actions
     }
 
-    pub(in super::super) fn start_live_transcription_with_fx(&mut self, run_fx: bool) {
+    pub fn start_live_transcription_with_fx(&mut self, run_fx: bool) -> Vec<AudioAction> {
         use llamaburn_services::{AudioInputService, AudioOutputService};
 
         let Some(device_id) = self.selected_device_id.clone() else {
-            self.error = Some("No audio device selected".to_string());
-            return;
+            return vec![AudioAction::SetError(Some("No audio device selected".to_string()))];
         };
         let Some(model) = self.whisper_model else {
-            self.error = Some("No Whisper model selected".to_string());
-            return;
+            return vec![AudioAction::SetError(Some("No Whisper model selected".to_string()))];
         };
 
         // Check if monitoring was active - we'll re-enable it during recording
@@ -357,12 +375,15 @@ impl BenchmarkPanel {
         self.live_recording = true;
         self.running = true;
         self.effect_detection_running = run_fx;
-        self.error = None;
         self.waveform_peaks.clear();
         self.transcription_segments.clear();
         self.recording_start = Some(std::time::Instant::now());
-        self.live_output.clear();
-        self.progress = "Recording...".to_string();
+
+        let actions = vec![
+            AudioAction::SetError(None),
+            AudioAction::ClearOutput,
+            AudioAction::SetProgress("Recording...".to_string()),
+        ];
 
         // Create channels for processing
         let (audio_tx, audio_rx) = std::sync::mpsc::channel::<Vec<f32>>();
@@ -373,10 +394,9 @@ impl BenchmarkPanel {
         let stream_handle = match AudioInputService::start_stream(&device_id, audio_tx) {
             Ok(h) => h,
             Err(e) => {
-                self.error = Some(format!("Failed to start audio stream: {}", e));
                 self.live_recording = false;
                 self.running = false;
-                return;
+                return vec![AudioAction::SetError(Some(format!("Failed to start audio stream: {}", e)))];
             }
         };
         self.live_stream_handle = Some(stream_handle);
@@ -545,22 +565,25 @@ impl BenchmarkPanel {
 
             let _ = event_tx_clone.send(LiveTranscriptionEvent::Stopped);
         });
+
+        actions
     }
 
-    pub(in super::super) fn stop_live_transcription(&mut self) {
+    pub fn stop_live_transcription(&mut self) {
         if let Some(handle) = self.live_stream_handle.take() {
             handle.stop();
         }
         self.live_recording = false;
         self.running = false;
         self.recording_start = None;
-        self.progress = "Stopped".to_string();
     }
 
-    pub(in super::super) fn poll_live_transcription(&mut self) {
+    pub fn poll_live_transcription(&mut self) -> Vec<AudioAction> {
         let Some(rx) = &self.live_transcription_rx else {
-            return;
+            return vec![];
         };
+
+        let mut actions = Vec::new();
 
         while let Ok(event) = rx.try_recv() {
             match event {
@@ -575,36 +598,32 @@ impl BenchmarkPanel {
                     self.transcription_segments.push(segment);
                 }
                 LiveTranscriptionEvent::StreamOutput(line) => {
-                    self.live_output.push_str(&line);
-                    self.live_output.push('\n');
+                    actions.push(AudioAction::AppendOutput(format!("{}\n", line)));
                 }
                 LiveTranscriptionEvent::GpuMetrics(_metrics) => {
                     // TODO: Display GPU metrics
                 }
                 LiveTranscriptionEvent::FxDetection(result) => {
                     // Append FX detection results to live output
-                    self.live_output.push_str("\n--- Effect Detection ---\n");
-                    self.live_output
-                        .push_str(&format!("Tool: {}\n", result.tool.label()));
-                    self.live_output.push_str(&format!(
-                        "Processing: {:.0}ms\n",
-                        result.processing_time_ms
-                    ));
+                    let mut output = String::from("\n--- Effect Detection ---\n");
+                    output.push_str(&format!("Tool: {}\n", result.tool.label()));
+                    output.push_str(&format!("Processing: {:.0}ms\n", result.processing_time_ms));
                     if result.effects.is_empty() {
-                        self.live_output.push_str("No effects detected\n");
+                        output.push_str("No effects detected\n");
                     } else {
                         for effect in &result.effects {
-                            self.live_output.push_str(&format!(
+                            output.push_str(&format!(
                                 "  • {} ({:.0}%)\n",
                                 effect.name,
                                 effect.confidence * 100.0
                             ));
                         }
                     }
+                    actions.push(AudioAction::AppendOutput(output));
                     self.effect_detection_result = Some(result);
                 }
                 LiveTranscriptionEvent::Error(e) => {
-                    self.error = Some(e);
+                    actions.push(AudioAction::SetError(Some(e)));
                 }
                 LiveTranscriptionEvent::Stopped => {
                     self.live_recording = false;
@@ -613,9 +632,11 @@ impl BenchmarkPanel {
                 }
             }
         }
+
+        actions
     }
 
-    pub(in super::super) fn unload_whisper_model(&mut self) {
+    pub fn unload_whisper_model(&mut self) {
         let Some(model) = self.whisper_model else {
             return;
         };
@@ -624,27 +645,55 @@ impl BenchmarkPanel {
         self.whisper_service.unload_model();
         self.whisper_model = None;
         self.model_info = None;
-        self.last_whisper_model_for_info = None;
-        self.audio_model_info_rx = None;
+        self.last_model_for_info = None;
+        self.model_info_rx = None;
     }
 
-    pub(in super::super) fn download_whisper_model(&mut self, model: WhisperModel) {
+    pub fn download_whisper_model(&mut self, model: WhisperModel) -> Vec<AudioAction> {
         let url = model.download_url();
         let path = self.whisper_service.model_path(model);
 
         info!("Opening download URL: {}", url);
-        self.live_output = format!(
-            "Download {} from:\n{}\n\nSave to:\n{}",
-            model.label(),
-            url,
-            path.display()
-        );
 
         // Open URL in browser
         let _ = open::that(&url);
+
+        vec![
+            AudioAction::ClearOutput,
+            AudioAction::AppendOutput(format!(
+                "Download {} from:\n{}\n\nSave to:\n{}",
+                model.label(),
+                url,
+                path.display()
+            )),
+        ]
     }
 
-    pub(in super::super) fn compute_waveform_peaks(samples: &[f32], num_peaks: usize) -> Vec<(f32, f32)> {
+    /// Build history entry from benchmark result (without saving)
+    pub fn build_audio_history_entry(&self, result: &AudioBenchmarkResult) -> Option<super::AudioHistoryEntry> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let model = self.whisper_model?;
+        let model_id = format!("whisper-{}", model.label().to_lowercase());
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        Some(super::AudioHistoryEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            timestamp,
+            benchmark_type: llamaburn_services::BenchmarkType::Audio,
+            audio_mode: llamaburn_services::AudioMode::Stt,
+            model_id,
+            config: result.config.clone(),
+            summary: result.summary.clone(),
+            metrics: result.metrics.clone(),
+        })
+    }
+
+    pub fn compute_waveform_peaks(samples: &[f32], num_peaks: usize) -> Vec<(f32, f32)> {
         let samples_per_peak = (samples.len() / num_peaks).max(1);
         samples
             .chunks(samples_per_peak)
@@ -656,7 +705,7 @@ impl BenchmarkPanel {
             .collect()
     }
 
-    pub(in super::super) fn save_samples_to_wav(samples: &[f32], sample_rate: u32, path: &std::path::Path) -> Result<(), String> {
+    pub fn save_samples_to_wav(samples: &[f32], sample_rate: u32, path: &std::path::Path) -> Result<(), String> {
         use hound::{WavSpec, WavWriter};
 
         let spec = WavSpec {

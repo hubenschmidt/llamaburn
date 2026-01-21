@@ -10,3 +10,4 @@ description = "Core types and configuration for LlamaBurn"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+uuid = { version = "1.11", features = ["v4"] }
