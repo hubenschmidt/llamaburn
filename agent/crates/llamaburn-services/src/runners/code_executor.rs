@@ -159,18 +159,37 @@ impl CodeExecutor {
         let source_path = self.temp_dir.path().join("main.go");
         let escaped_input = test_case.input.replace('`', "'").replace('"', "\\\"");
 
-        // Build imports from structured output (filter out builtins and unused)
+        // Clean the LLM code - strip package/import/main that LLM might include
+        let (extracted_imports, clean_code) = extract_go_imports(&structured.code);
+
+        // Debug: write the generated code to a file we can inspect
+        let debug_path = self.temp_dir.path().join("debug_go.txt");
+        let debug_content = format!(
+            "=== STRUCTURED.CODE ===\n{}\n\n=== CLEAN_CODE ===\n{}\n\n=== EXTRACTED_IMPORTS ===\n{}",
+            structured.code, clean_code, extracted_imports
+        );
+        let _ = fs::write(&debug_path, &debug_content).await;
+
+        // Merge imports from structured output and extracted from code
         let builtin = ["encoding/json", "fmt", "reflect"];
-        let user_imports = structured.imports.iter()
+        let mut all_imports: Vec<String> = structured.imports.iter()
             .filter(|i| !builtin.contains(&i.as_str()))
             .filter(|i| {
-                // Only include if package name appears in code
                 let pkg_name = i.rsplit('/').next().unwrap_or(i);
-                structured.code.contains(&format!("{}.", pkg_name))
+                clean_code.contains(&format!("{}.", pkg_name))
             })
             .map(|i| format!("    \"{}\"", i))
-            .collect::<Vec<_>>()
-            .join("\n");
+            .collect();
+
+        // Add any imports extracted from code that aren't already included
+        if !extracted_imports.is_empty() {
+            for line in extracted_imports.lines() {
+                if !all_imports.contains(&line.to_string()) {
+                    all_imports.push(line.to_string());
+                }
+            }
+        }
+        let user_imports = all_imports.join("\n");
 
         let full_code = format!(
             r#"package main
@@ -245,12 +264,15 @@ func convertArg(arg interface{{}}, targetType reflect.Type) reflect.Value {{
 }}
 "#,
             user_imports = user_imports,
-            code = structured.code,
+            code = clean_code,
             escaped_input = escaped_input,
             func_name = structured.function_name,
         );
 
         fs::write(&source_path, &full_code).await?;
+
+        // Debug: log the full generated Go code
+        tracing::debug!("Generated Go code:\n{}", full_code);
 
         let start = Instant::now();
         let source_str = source_path.to_str().expect("temp path not UTF-8");
@@ -918,12 +940,13 @@ fn normalize_output(s: &str) -> String {
 }
 
 /// Extract imports from Go code and return (additional_imports, clean_code)
-/// Strips `package main`, import statements, and `func main()` blocks
+/// Strips `package main`, import statements, `func main()` blocks, and any
+/// content before the first real function definition (comments, etc.)
 fn extract_go_imports(code: &str) -> (String, String) {
-    #[derive(PartialEq)]
-    enum State { Normal, InImportBlock, InMainFunc(usize) }
+    #[derive(PartialEq, Clone)]
+    enum State { Preamble, Normal, InImportBlock, InMainFunc(usize) }
 
-    let mut state = State::Normal;
+    let mut state = State::Preamble;
     let mut imports = Vec::new();
     let mut clean_lines = Vec::new();
 
@@ -933,6 +956,7 @@ fn extract_go_imports(code: &str) -> (String, String) {
         let close = trimmed.matches('}').count();
 
         state = match (&state, trimmed) {
+            // Skip func main entirely
             (State::InMainFunc(depth), _) => {
                 let new_depth = depth + open - close;
                 if new_depth == 0 { State::Normal } else { State::InMainFunc(new_depth) }
@@ -941,19 +965,30 @@ fn extract_go_imports(code: &str) -> (String, String) {
                 let depth = open.saturating_sub(close);
                 if depth == 0 && open > 0 { State::Normal } else { State::InMainFunc(depth.max(1)) }
             }
-            (_, t) if t.starts_with("package ") => State::Normal,
+            // Skip package declaration
+            (_, t) if t.starts_with("package ") => state.clone(),
+            // Handle import blocks
             (_, t) if t.starts_with("import (") => State::InImportBlock,
-            (State::InImportBlock, ")") => State::Normal,
+            (State::InImportBlock, ")") => State::Preamble,
             (State::InImportBlock, t) if !t.is_empty() => {
                 imports.push(t.trim_matches('"').to_string());
                 State::InImportBlock
             }
             (State::InImportBlock, _) => State::InImportBlock,
+            // Handle single-line imports
             (_, t) if t.starts_with("import \"") => {
                 imports.push(t.trim_start_matches("import ").trim_matches('"').to_string());
+                state.clone()
+            }
+            // First real func (not main) - start collecting
+            (State::Preamble, t) if t.starts_with("func ") && !t.starts_with("func main(") => {
+                clean_lines.push(line);
                 State::Normal
             }
-            _ => {
+            // In Preamble - skip comments and other junk before first func
+            (State::Preamble, _) => State::Preamble,
+            // Normal - collect all lines
+            (State::Normal, _) => {
                 clean_lines.push(line);
                 State::Normal
             }
